@@ -1,0 +1,5 @@
+[tools]
+# Pinned to 22 rather than inheriting the workspace root's `node = "lts"`, so the
+# local toolchain matches what CI runs (.github/workflows/*.yml). Keep the two in
+# sync — nothing enforces it automatically.
+node = "22"

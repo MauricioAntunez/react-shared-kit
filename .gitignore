@@ -1,0 +1,12 @@
+node_modules
+dist
+*.tsbuildinfo
+
+# Local Claude Code settings (machine-specific, not for the public repo)
+.claude/
+
+# Internal planning docs — kept local, not part of the public repo
+docs/
+
+# Agent guidance — local only
+CLAUDE.md

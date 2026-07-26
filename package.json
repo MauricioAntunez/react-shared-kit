@@ -1,0 +1,53 @@
+{
+  "name": "react-shared-kit",
+  "version": "2026.726.0",
+  "description": "Small, app-agnostic React utilities shared across projects.",
+  "license": "MIT",
+  "author": "Mauricio Antúnez",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MauricioAntunez/react-shared-kit.git"
+  },
+  "homepage": "https://github.com/MauricioAntunez/react-shared-kit#readme",
+  "bugs": {
+    "url": "https://github.com/MauricioAntunez/react-shared-kit/issues"
+  },
+  "keywords": [
+    "react",
+    "keys",
+    "list",
+    "typescript",
+    "utilities"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run",
+    "release": "npm version \"$(node scripts/calver.mjs)\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}

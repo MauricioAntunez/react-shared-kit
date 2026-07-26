@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  # Required for npm trusted publishing (OIDC). Without it npm cannot mint a
+  # publish token and the job fails with an authentication error.
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Must match mise.toml — setup-node cannot read it, so this is a manual pin.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # Trusted publishing needs npm >= 11.5.1. setup-node's bundled npm may be older
+      # than the one mise ships with the same Node, so upgrade rather than assume.
+      - run: npm install -g npm@latest
+
+      - run: npm ci
+
+      # Fail loudly rather than publishing a version that disagrees with the tag,
+      # or one whose date is malformed (npm would reject 2026.0726.0 anyway, but
+      # a typo like 2026.230.0 is valid semver and would ship silently).
+      - name: Verify tag matches a well-formed CalVer package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          pkg_version="$(node -p 'require("./package.json").version')"
+          if [ "$TAG" != "v$pkg_version" ]; then
+            echo "Tag '$TAG' does not match package.json version '$pkg_version'." >&2
+            exit 1
+          fi
+          node scripts/calver.mjs --check "$pkg_version"
+
+      - run: npm run lint
+
+      - run: npm run build
+
+      - run: npm test
+
+      # No --provenance flag: trusted publishing attaches provenance automatically.
+      - run: npm publish
