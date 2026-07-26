@@ -37,6 +37,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run",

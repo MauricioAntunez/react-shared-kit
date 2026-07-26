@@ -24,6 +24,9 @@ jobs:
 
       - run: npm run lint
 
+      # Covers *.test.ts, which the build config must exclude — see tsconfig.check.json.
+      - run: npm run typecheck
+
       - run: npm run build
 
       - run: npm test

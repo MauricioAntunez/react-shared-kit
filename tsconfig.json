@@ -14,6 +14,13 @@
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
 
+    /* Source is written with real `.ts` specifiers and tsc rewrites them to `.js`
+       on emit. This is what makes the `source` export condition honest: a consumer
+       resolving src/index.ts finds src/*.ts, which exist, rather than src/*.js,
+       which never do. */
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
     /* Strict suite — matches the consuming app's bar, no reason to diverge. */
     "strict": true,
     "noImplicitOverride": true,
@@ -22,8 +29,17 @@
     "exactOptionalPropertyTypes": true,
     "useUnknownInCatchVariables": true,
     "forceConsistentCasingInFileNames": true,
+    /* OFF, matching the consuming app. Its reason there is CSS Modules; the reason
+       here is that it directly contradicts Biome's `useLiteralKeys`, which demands
+       `obj.key` exactly where this flag demands `obj['key']`. One of the two must
+       yield, and turning this off keeps both toolchains in agreement. */
+    "noPropertyAccessFromIndexSignature": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    /* Load-bearing: package.json exposes a `source` condition pointing at raw .ts,
+       so the source must survive type-stripping transpilers (Node, esbuild). This
+       flag bans enums, namespaces and parameter properties, which they cannot erase. */
+    "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],

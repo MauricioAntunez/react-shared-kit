@@ -1,14 +1,21 @@
 # @uxr/react-shared-kit
 
-A small library of app-agnostic React utilities, shared across projects. Not a framework and not a
-design system — no components, no CSS, no design tokens. Those belong to the app that owns them.
-ESM only, zero runtime dependencies.
+A small library of app-agnostic utilities, shared across projects. Not a framework and not a design
+system — no components, no CSS, no design tokens. Those belong to the app that owns them. ESM only,
+zero runtime dependencies, Node 22+.
 
 ```bash
 npm install @uxr/react-shared-kit
 ```
 
-## `resolveKeys(items, getId?)`
+Published with [provenance](https://docs.npmjs.com/generating-provenance-statements) from GitHub
+Actions, so every release is traceable to the commit and workflow that built it.
+
+---
+
+## List keys
+
+### `resolveKeys(items, getId?)`
 
 Stable React list keys for items that carry no domain id.
 
@@ -16,7 +23,7 @@ An array index is not an identity. When a list is reordered, filtered, or prepen
 make React reuse the wrong DOM node — a checked checkbox stays checked on a different row, a focused
 input keeps focus while its value changes underneath.
 
-```ts
+```tsx
 import { resolveKeys } from '@uxr/react-shared-kit';
 
 function Rows({ rows }: { rows: Row[] }) {
@@ -31,16 +38,16 @@ Keys are resolved in order of trustworthiness:
 2. object identity, for objects with no id,
 3. the primitive value itself.
 
-Duplicate keys are disambiguated by occurrence — the first `x` stays `x`, the second becomes `x#1`
-— so a list that does not change produces keys that do not change.
+Duplicate keys are disambiguated by occurrence — the first `x` stays `x`, the second becomes `x#1` —
+so a list that does not change produces keys that do not change.
 
 ```ts
-resolveKeys([{ id: 'a' }, { id: 'b' }]);        // ['a', 'b']
-resolveKeys(['x', 'x', 'y']);                   // ['x', 'x#1', 'y']
-resolveKeys(items, (item) => item.slug);        // custom accessor
+resolveKeys([{ id: 'a' }, { id: 'b' }]); // ['a', 'b']
+resolveKeys(['x', 'x', 'y']);            // ['x', 'x#1', 'y']
+resolveKeys(items, (item) => item.slug); // custom accessor
 ```
 
-## `stableKey(item)`
+### `stableKey(item)`
 
 The single-item primitive behind `resolveKeys`. Objects get a key assigned on first sight via a
 `WeakMap` and keep it for their lifetime, with no retention — the entry is collected with the
@@ -48,16 +55,129 @@ object. Primitives return their own value.
 
 ```ts
 const a = { name: 'x' };
-stableKey(a) === stableKey(a); // true
-stableKey({ name: 'x' }) === stableKey({ name: 'x' }); // false — distinct objects
+stableKey(a) === stableKey(a);                          // true
+stableKey({ name: 'x' }) === stableKey({ name: 'x' });  // false — distinct objects
 ```
 
-## Limitations worth knowing
+**Keys are process-local.** They come from an in-memory counter, so they are not stable across
+reloads, workers, or servers. Never persist them or send them over the wire. And duplicate
+primitives are genuinely ambiguous — nothing can tell the second `'Santiago'` in a list from the
+third, so those keys are order-dependent by necessity. Give such lists real ids.
 
-- **Keys are process-local.** They come from an in-memory counter, so they are not stable across
-  reloads, workers, or servers. Never persist them or send them over the wire.
-- **Duplicate primitives are genuinely ambiguous.** Nothing can tell the second `'Santiago'` in a
-  list from the third, so their keys are order-dependent by necessity. Give such lists real ids.
+---
+
+## Case conversion
+
+For crossing an API boundary: `snake_case` on the wire, `camelCase` in the app.
+
+```ts
+import { camelCaseKeys, snakeCaseKeys, toCamelCase, toSnakeCase, capitalize } from '@uxr/react-shared-kit';
+
+toCamelCase('user_name');  // 'userName'
+toSnakeCase('userName');   // 'user_name'
+capitalize('hello');       // 'Hello'
+
+camelCaseKeys({ user_name: 'a', nested: { inner_key: [{ deep_key: 1 }] } });
+// { userName: 'a', nested: { innerKey: [{ deepKey: 1 }] } }
+```
+
+`camelCaseKeys` / `snakeCaseKeys` recurse through objects and arrays, never mutate their input, and
+pass **non-plain objects through by reference** — `Date`, `Map`, `Set`, `RegExp` and class instances
+survive intact rather than being flattened into plain objects with renamed keys. Keys are assigned
+with `defineProperty`, so a `__proto__` key in an untrusted payload cannot reassign the prototype.
+
+Two behaviours worth knowing before you rely on them:
+
+- **Only `_` followed by a lowercase letter is a boundary.** `user_ID` and `field_2` come back
+  unchanged.
+- **Every uppercase letter is a boundary going the other way**, so acronyms split:
+  `parseURL` → `parse_u_r_l`. That round-trips back intact, but it is not the spelling a human would
+  pick.
+
+The return type is the input type. Keys are renamed at runtime but not in the type system, so cast
+at the boundary if the distinction matters to you.
+
+---
+
+## Date ranges
+
+Preset ranges for period pickers, in the local timezone or UTC.
+
+```ts
+import { periodToRange, resolvePeriodRange, toYmd, PERIODS } from '@uxr/react-shared-kit';
+
+// Ranges run Monday -> today. Below, "now" is 02:30 UTC on Sunday 2026-07-26,
+// which is still Saturday the 25th in Santiago — hence the different `to`.
+periodToRange('week');                 // { from: '2026-07-20', to: '2026-07-25' }  local
+periodToRange('week', { utc: true });  // { from: '2026-07-20', to: '2026-07-26' }  UTC
+
+// Handles the whole picker, including the user-supplied case:
+resolvePeriodRange(period, customFrom, customTo);
+```
+
+Every function here answers a calendar question, and the answer depends on the timezone: at 21:00 in
+Santiago it is already tomorrow in UTC. Pass `{ utc: true }` when a UTC-based API consumes the range;
+leave it off when a person reads it. Dates are emitted as `YYYY-MM-DD` strings, never `Date` objects
+— a calendar date has no time and no offset, and attaching one invites exactly the confusion this
+module exists to avoid.
+
+`PERIODS` is a `const` array you can iterate to build the picker; `Period` is the union derived from
+it. `periodToRange` accepts only *preset* periods — `'custom'` is a compile error there, because it
+has no computable range. Use `resolvePeriodRange`, which takes the user's dates alongside the period.
+
+Pass `{ now }` to pin "today" — the option exists so week and month boundaries are testable, which is
+precisely where date bugs live.
+
+```ts
+todayYmd({ utc: true });         // '2026-07-26'
+monthStartYmd();                 // '2026-07-01'
+toYmd(new Date(), { utc: true });
+```
+
+`normalizeYmd` extracts the `YYYY-MM-DD` prefix of a date string, accepting the dashed form (with or
+without a time suffix) or compact `YYYYMMDD`, and returns `''` when it matches neither:
+
+```ts
+normalizeYmd('2026-07-26T02:00:00Z'); // '2026-07-26'
+normalizeYmd('20260726');             // '2026-07-26'
+normalizeYmd('not a date');           // ''
+```
+
+It is **string surgery, not a timezone conversion** — the result is the date as written, wherever you
+run it. To convert an instant to a calendar date in a given zone, use `toYmd(new Date(iso), { utc })`
+instead. The two disagree by a day near midnight, which is the bug this note exists to prevent.
+
+---
+
+## Chilean RUT
+
+```ts
+import { isValidRut, formatRut } from '@uxr/react-shared-kit';
+
+isValidRut('12.345.678-5'); // true
+isValidRut('12345678-5');   // true — dots, hyphens and spaces are ignored
+isValidRut('12.345.670-k'); // true — K accepted in either case
+formatRut('123456785');     // '12.345.678-5'
+```
+
+Validation is the mod-11 check-digit algorithm: it proves the digits are internally consistent, **not
+that the RUT was ever issued to anyone**. Treat `true` as "well-formed", never as "this person
+exists".
+
+`formatRut` returns the cleaned input unchanged when the RUT is invalid — it never throws and never
+reports failure, so call `isValidRut` first if you need to tell "formatted" from "gave up".
+
+---
+
+## Consuming the TypeScript source
+
+The default entry point is compiled JavaScript plus declarations, which works in any bundler and any
+Node. A `source` export condition additionally points at the raw `.ts`, for tools that prefer to
+transpile it themselves:
+
+```json
+"exports": { ".": { "source": "./src/index.ts", "types": "./dist/index.d.ts", "import": "./dist/index.js" } }
+```
 
 ## License
 

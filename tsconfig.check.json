@@ -1,0 +1,15 @@
+/* Typecheck-only config: same strict suite as the build, but it also covers
+   *.test.ts, which tsconfig.json must exclude so tests are never emitted into
+   dist/. Vitest transpiles without typechecking, so without this the tests are
+   the one part of the repo no tool typechecks. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "include": ["src", "scripts"],
+  "exclude": ["dist"]
+}

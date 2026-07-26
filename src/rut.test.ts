@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatRut, isValidRut } from './rut.js';
+import { formatRut, isValidRut } from './rut.ts';
 
 // Anchors: both are widely published as valid RUTs, so they check the algorithm
 // against something other than this implementation's own output.

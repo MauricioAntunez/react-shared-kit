@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveKeys, stableKey } from './stableKey.js';
+import { resolveKeys, stableKey } from './stableKey.ts';
 
 describe('stableKey', () => {
   it('returns the same key for the same object across calls', () => {

@@ -34,11 +34,14 @@
     "rules": {
       "preset": "recommended",
       "correctness": {
+        "useJsxKeyInIterable": "error",
+        "useExhaustiveDependencies": "error",
         "noUnusedVariables": "error",
         "noUnusedImports": "error",
         "noUnusedFunctionParameters": "error"
       },
       "suspicious": {
+        "noArrayIndexKey": "error",
         "noExplicitAny": "error",
         "noDoubleEquals": "error",
         "noDebugger": "error",
@@ -47,9 +50,28 @@
           "options": { "allow": ["warn", "error"] }
         }
       },
+      "a11y": {
+        "noStaticElementInteractions": "error",
+        "useKeyWithClickEvents": "error",
+        "useButtonType": "error",
+        "noAutofocus": "error",
+        "useFocusableInteractive": "error",
+        "useSemanticElements": "error"
+      },
+      "complexity": {
+        "noUselessFragments": "error",
+        "noExcessiveCognitiveComplexity": {
+          "level": "error",
+          "options": { "maxAllowedComplexity": 12 }
+        }
+      },
       "style": {
         "noNonNullAssertion": "error",
         "useConst": "error",
+        "useShorthandAssign": "error",
+        "noParameterAssign": "error",
+        "useAsConstAssertion": "error",
+        "useSelfClosingElements": "error",
         "useImportType": "error",
         "useNodejsImportProtocol": "error"
       }
