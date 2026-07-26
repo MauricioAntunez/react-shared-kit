@@ -1,6 +1,6 @@
 {
-  "name": "react-shared-kit",
-  "version": "2026.726.0",
+  "name": "@uxr/react-shared-kit",
+  "version": "2026.726.1",
   "description": "Small, app-agnostic React utilities shared across projects.",
   "license": "MIT",
   "author": "Mauricio Antúnez",
@@ -40,6 +40,9 @@
     "format": "biome check --write .",
     "test": "vitest run",
     "release": "npm version \"$(node scripts/calver.mjs)\""
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=22"

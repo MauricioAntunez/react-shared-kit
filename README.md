@@ -1,11 +1,11 @@
-# react-shared-kit
+# @uxr/react-shared-kit
 
 A small library of app-agnostic React utilities, shared across projects. Not a framework and not a
 design system — no components, no CSS, no design tokens. Those belong to the app that owns them.
 ESM only, zero runtime dependencies.
 
 ```bash
-npm install react-shared-kit
+npm install @uxr/react-shared-kit
 ```
 
 ## `resolveKeys(items, getId?)`
@@ -17,7 +17,7 @@ make React reuse the wrong DOM node — a checked checkbox stays checked on a di
 input keeps focus while its value changes underneath.
 
 ```ts
-import { resolveKeys } from 'react-shared-kit';
+import { resolveKeys } from '@uxr/react-shared-kit';
 
 function Rows({ rows }: { rows: Row[] }) {
   const keys = resolveKeys(rows);
