@@ -97,6 +97,24 @@ describe('verifyImages', () => {
     expect(r.issues.some((i) => i.kind === 'missing-file')).toBe(false);
   });
 
+  it('fails a derivative of the right WIDTH but the wrong image', async () => {
+    // A stale derivative from a previous master that produced the same rung width passes a
+    // width-only check. optimizeImages has the sha256 ledger; a verify-only job has nothing.
+    await write(join(dir, 'images', 'blog', 'foo.jpg-480.webp'), 480, 100);
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === 'aspect-mismatch')).toBe(true);
+  });
+
+  it('keeps ok independent of ignored — ignored is advisory', async () => {
+    await write(join(dir, 'images', 'blog', 'source.avif'), 800, 600);
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    expect(r.ignored.length).toBeGreaterThan(0);
+    // Documented contract: an unsupported source format is a fact about the tree, not a build
+    // failure. A consumer gating only on ok must be told to read ignored separately.
+    expect(r.ok).toBe(true);
+  });
+
   it('fails when a master on disk is ABSENT from the manifest', async () => {
     // verifyImages iterates the manifest, so every way a master can go missing FROM the manifest
     // was invisible to it — a stale manifest, a misclassified file, or an image added since the

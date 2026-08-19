@@ -31,7 +31,7 @@ export interface ScanResult {
  * extension alone was a silent skip. AVIF is deliberately absent: it is an output format, and
  * accepting it risks re-ingesting our own derivatives.
  */
-const MASTER_RE = /\.(jpg|jpeg|jfif|jpe|png|webp)$/i;
+const MASTER_RE = /\.(jpg|jpeg|jfif|jfi|jif|jpe|png|webp)$/i;
 
 /**
  * Image files that are neither masters nor ours. Reported, never silently passed over.
@@ -44,11 +44,11 @@ const MASTER_RE = /\.(jpg|jpeg|jfif|jpe|png|webp)$/i;
  * rather than a problem to report, and listing every icon would drown the real signal.
  */
 const IGNORED_IMAGE_RE =
-  /\.(avif|gif|apng|bmp|tiff?|heic|heif|jxl|ico|cur|jp2|j2k|jpf|jpx|tga|dng|cr2|cr3|nef|arw|orf|rw2|raf|psd|xcf|pbm|pgm|ppm|pnm)$/i;
+  /\.(avif|avifs|gif|apng|bmp|dib|tiff?|heic|heics|heif|heifs|hif|jxl|ico|cur|jp2|j2k|jpf|jpx|jpm|mj2|tga|icb|vda|vst|dng|cr2|cr3|nef|arw|orf|rw2|raf|srw|pef|x3f|erf|kdc|mos|iiq|3fr|psd|psb|xcf|pbm|pgm|ppm|pnm|pam|pfm|exr|hdr|pcx|wbmp|ras|sgi|rgb|qoi)$/i;
 
 function reasonFor(name: string): IgnoredFile['reason'] {
   if (/\.avif$/i.test(name)) return 'output-format-as-source';
-  if (/\.(gif|apng)$/i.test(name)) return 'animation-unsupported';
+  if (/\.(gif|apng|avifs|heics|heifs|mj2)$/i.test(name)) return 'animation-unsupported';
   return 'unsupported-source-format';
 }
 
@@ -85,10 +85,6 @@ export function derivativeName(masterFileName: string, width: number, ext: strin
  * never in the manifest, and nothing errors. `verifyImages`' `masters-not-in-manifest` check is
  * the backstop that makes such a mistake loud rather than invisible.
  */
-export function isOwnDerivative(name: string, siblings: ReadonlySet<string>): boolean {
-  return classify(name, siblings) === 'derivative';
-}
-
 /**
  * Three outcomes, not two — the missing third is what made a rename corrupt the tree.
  *

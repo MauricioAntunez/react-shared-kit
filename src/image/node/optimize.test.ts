@@ -335,6 +335,32 @@ describe('optimizeImages', () => {
     }
   });
 
+  it('flags an existing but master-less sourceDir distinctly from a missing one', async () => {
+    const empty = join(dir, 'empty2');
+    await mkdir(empty, { recursive: true });
+    const r = await optimizeImages({ ...opts, sourceDir: empty });
+    expect(r.sourceDirEmpty).toBe(true);
+    expect(r.sourceDirMissing).toBeUndefined();
+  });
+
+  it('accepts the whole JFIF family, not just .jfif', async () => {
+    const blog = join(dir, 'images', 'blog');
+    await makeMaster(join(blog, 'a.jif'), 1000, 600, 40);
+    await makeMaster(join(blog, 'b.jfi'), 1000, 600, 50);
+    const r = await optimizeImages(opts);
+    expect(r.manifest['/images/blog/a.jif']).toBeDefined();
+    expect(r.manifest['/images/blog/b.jfi']).toBeDefined();
+  });
+
+  it('reports animated AVIF rather than letting it vanish', async () => {
+    const blog = join(dir, 'images', 'blog');
+    await writeFile(join(blog, 'motion.avifs'), 'x');
+    const r = await optimizeImages(opts);
+    expect(r.ignored.find((i) => i.publicPath === '/images/blog/motion.avifs')?.reason).toBe(
+      'animation-unsupported',
+    );
+  });
+
   it('does not write the manifest when sourceDir does not exist', async () => {
     await writeFile(opts.manifestPath, '{"pre":"existing"}');
     await optimizeImages({ ...opts, sourceDir: join(dir, 'nowhere') });

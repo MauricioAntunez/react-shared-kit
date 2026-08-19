@@ -4,14 +4,25 @@ import type { ImageManifest, Rung } from './types.ts';
 const VECTOR_RE = /\.svgz?(\?|#|$)/i;
 
 /**
- * Guarded because a bare `process.env.NODE_ENV` throws a ReferenceError wherever `process` is not
- * defined, and it sits on the MISSING-ENTRY branch — so the benign degrade this component promises
- * ("never blank a page") became a hard render failure instead. Vite and Next inject a define for
- * it; a plain Rollup/esbuild bundle, a native-ESM load of `dist/`, or a non-Node runtime does not,
- * and a library cannot assume its consumer's bundler config.
+ * Two failure modes to avoid at once, and the obvious guard hits the second one.
+ *
+ * A bare `process.env.NODE_ENV` throws a ReferenceError wherever `process` is undefined, and it
+ * sits on the MISSING-ENTRY branch — so the benign degrade this component promises ("never blank a
+ * page") becomes a hard render failure. But guarding with `typeof process !== 'undefined'` is
+ * WORSE: bundlers substitute the `process.env.NODE_ENV` define, yet cannot fold `typeof process`,
+ * so in a browser the guard is false at runtime, `isProduction()` returns false in production, and
+ * the warning ships to every end user forever. Measured against a real Vite 8 production build.
+ *
+ * The member access must therefore stay bare, so `define` substitution still applies, with the
+ * ReferenceError caught. It fails to `true` — silence — because a library that cannot tell which
+ * environment it is in should not shout at end users.
  */
 function isProduction(): boolean {
-  return typeof process !== 'undefined' && process.env?.NODE_ENV === 'production';
+  try {
+    return process.env.NODE_ENV === 'production';
+  } catch {
+    return true;
+  }
 }
 
 export interface PictureProps {

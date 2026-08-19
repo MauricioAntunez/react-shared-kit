@@ -52,12 +52,18 @@ export interface OptimizeResult {
    * from a corrupt one — otherwise a ledger being clobbered every run looks exactly like a normal
    * first build, forever.
    */
-  ledgerReset?: 'missing' | 'corrupt';
+  ledgerReset?: 'missing' | 'corrupt' | undefined;
   /**
    * Set when `sourceDir` does not exist. Distinguishes a misconfigured path from a genuinely
    * empty tree — both otherwise report mastersFound: 0 and look like success.
    */
-  sourceDirMissing?: boolean;
+  sourceDirMissing?: boolean | undefined;
+  /**
+   * Set when `sourceDir` exists but contains no masters. Distinct from `sourceDirMissing`: the
+   * manifest is left untouched in BOTH cases, so without this the returned (empty) manifest and
+   * the one on disk disagree with nothing saying so.
+   */
+  sourceDirEmpty?: boolean | undefined;
 }
 
 type Formats = Required<NonNullable<OptimizeOptions['formats']>>;
@@ -324,8 +330,10 @@ async function orientedSize(abs: string): Promise<{ width: number; height: numbe
  * skipped, left the PREVIOUS manifest on disk for `verifyImages` to bless. That is the "the output
  * exists, so we are done" failure this module exists to eliminate, reconstituted one layer up.
  *
- * A missing `sourceDir` is the single case treated as data rather than error: it returns an empty
- * result and writes NOTHING, so a misconfigured path cannot clobber a good manifest with `{}`.
+ * Two conditions are treated as data rather than error, each carrying its own flag so neither is
+ * silent: a missing `sourceDir` (`sourceDirMissing`) and an existing one holding no masters
+ * (`sourceDirEmpty`). Both return early and write NOTHING, so a misconfigured path cannot clobber
+ * a good manifest with `{}`.
  */
 export async function optimizeImages(options: OptimizeOptions): Promise<OptimizeResult> {
   const formats: Formats = {
@@ -365,7 +373,13 @@ export async function optimizeImages(options: OptimizeOptions): Promise<Optimize
   const { masters, ignored } = await findMasters(options.sourceDir);
   result.ignored = ignored;
   result.mastersFound = masters.length;
-  if (masters.length === 0) return result;
+  if (masters.length === 0) {
+    // Deliberately does NOT write an empty manifest: pointing at a wrong-but-existing directory
+    // is a real misconfiguration, and clobbering a good manifest with {} would be unrecoverable.
+    // The flag is what keeps that silence from being indistinguishable from success.
+    result.sourceDirEmpty = true;
+    return result;
+  }
 
   const plans: RungPlan[] = [];
   for (const master of masters) {

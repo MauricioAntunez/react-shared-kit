@@ -91,7 +91,24 @@ describe('Picture', () => {
     warn.mockRestore();
   });
 
+  it('is SILENT in production — the warning must never reach end users', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      // Guarding with `typeof process !== undefined` inverts this: a bundler substitutes the
+      // define but cannot fold the typeof, so in a browser the guard is false at runtime and the
+      // warning ships to every user forever — devaluing the one signal a mistyped src has.
+      render(<Picture manifest={MANIFEST} src="/images/blog/typo.jpg" alt="x" sizes="100vw" />);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = saved;
+      warn.mockRestore();
+    }
+  });
+
   it('does NOT crash when `process` is undefined (non-Node bundle)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const saved = globalThis.process;
     // @ts-expect-error deleting a global to simulate a bundle with no process shim
     delete globalThis.process;
@@ -102,8 +119,14 @@ describe('Picture', () => {
         <Picture manifest={MANIFEST} src="/images/blog/gone.jpg" alt="x" sizes="100vw" />,
       );
       expect(html).toContain('src="/images/blog/gone.jpg"');
+      // And it must stay SILENT. A browser bundle has no `process`, so a guard of the form
+      // `typeof process !== undefined && ...` evaluates false there and warns in production
+      // forever. When the environment cannot be determined, silence is the only safe answer —
+      // this assertion is what distinguishes the two implementations, since in Node both work.
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       globalThis.process = saved;
+      warn.mockRestore();
     }
   });
 

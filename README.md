@@ -240,8 +240,27 @@ Four rules the module never bends:
   smallest JPEG rung, and images are `loading="lazy"` unless `priority` is set.
 
 `verifyImages` re-checks an existing manifest against the source tree (stale entries, missing
-files, ladder violations) without re-encoding anything — run it in CI to catch a manifest that
-drifted from its images.
+files, ladder violations, derivatives whose aspect ratio proves they came from a different master)
+without re-encoding anything — run it in CI to catch a manifest that drifted from its images.
+
+**`ok` reflects `issues` only.** The result also carries `ignored`: image files that exist in the
+tree but were never treated as masters — an AVIF used as a source, an animated GIF, an orphaned
+derivative left behind by a rename. Those are facts about the tree rather than proof the build is
+wrong, so they deliberately do **not** set `ok: false`; failing on them would push you to disable
+the gate wholesale. A CI script that stops at `if (!result.ok)` will never see them, so check both:
+
+```ts
+const result = await verifyImages({ manifest, classes, sourceDir: 'public' });
+if (!result.ok) {
+  for (const issue of result.issues) console.error(`${issue.kind}: ${issue.path} — ${issue.detail}`);
+  process.exit(1);
+}
+for (const file of result.ignored) console.warn(`not optimized (${file.reason}): ${file.publicPath}`);
+```
+
+`optimizeImages` reports the same set on its own `ignored`, plus `sourceDirMissing` and
+`sourceDirEmpty` — both leave any existing manifest untouched, so the flags are the only way to
+tell a misconfigured path from a genuinely empty one.
 
 ---
 

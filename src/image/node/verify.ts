@@ -11,7 +11,8 @@ export type VerifyIssueKind =
   | 'undersized-master'
   | 'count-mismatch'
   | 'master-not-in-manifest'
-  | 'unreadable-file';
+  | 'unreadable-file'
+  | 'aspect-mismatch';
 
 export interface VerifyIssue {
   kind: VerifyIssueKind;
@@ -50,7 +51,7 @@ function derivativePatternFor(basename: string): RegExp {
  * something false about a file they can see sitting there, and hides the actual fix.
  */
 type Measurement =
-  | { kind: 'ok'; width: number | undefined }
+  | { kind: 'ok'; width: number | undefined; height: number | undefined }
   | { kind: 'missing' }
   | { kind: 'unreadable'; message: string };
 
@@ -69,7 +70,7 @@ async function measure(path: string): Promise<Measurement> {
 
   try {
     const metadata = await sharp(path).metadata();
-    return { kind: 'ok', width: metadata.width };
+    return { kind: 'ok', width: metadata.width, height: metadata.height };
   } catch (error) {
     return { kind: 'unreadable', message: error instanceof Error ? error.message : String(error) };
   }
@@ -79,6 +80,7 @@ async function checkRungFiles(
   masterDir: string,
   sourcePath: string,
   rung: Rung,
+  entry: ManifestEntry,
   issues: VerifyIssue[],
 ): Promise<void> {
   for (const file of Object.values(rung.files)) {
@@ -115,8 +117,34 @@ async function checkRungFiles(
         path: sourcePath,
         detail: `"${file}" measures ${width}px wide but the manifest rung descriptor says w=${rung.w}`,
       });
+      continue;
     }
+    // Width alone does not identify an image. A stale derivative left by a PREVIOUS master that
+    // happened to produce the same rung width passes a width-only check, so a verify-only job
+    // (which has no sha256 ledger to lean on) would bless the wrong picture entirely.
+    checkAspect(sourcePath, file, measured.height, width, entry, issues);
   }
+}
+
+function checkAspect(
+  sourcePath: string,
+  file: string,
+  height: number | undefined,
+  width: number,
+  entry: ManifestEntry,
+  issues: VerifyIssue[],
+): void {
+  if (height === undefined || entry.w === 0) return;
+  const expected = Math.round((width * entry.h) / entry.w);
+  // 1px of slack for the encoder rounding a half-pixel.
+  if (Math.abs(height - expected) <= 1) return;
+  issues.push({
+    kind: 'aspect-mismatch',
+    path: sourcePath,
+    detail:
+      `"${file}" is ${width}x${height}, but the master is ${entry.w}x${entry.h}, so this rung ` +
+      `should be ${width}x${expected} — the file does not come from this master`,
+  });
 }
 
 function checkUpscale(
@@ -186,7 +214,7 @@ async function verifyEntry(
   const masterDir = dirname(masterPath);
 
   for (const rung of entry.rungs) {
-    await checkRungFiles(masterDir, sourcePath, rung, issues);
+    await checkRungFiles(masterDir, sourcePath, rung, entry, issues);
   }
 
   const measuredMaster = await measure(masterPath);
