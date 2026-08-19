@@ -68,8 +68,6 @@ const SHARP_FORMAT_BY_EXT: Record<string, string> = {
   jpf: 'jp2',
   jpx: 'jp2',
   jxl: 'jxl',
-  gif: 'gif',
-  apng: 'png',
 };
 
 function isDecodableBySharp(name: string): boolean {
@@ -110,17 +108,15 @@ export function derivativeName(masterFileName: string, width: number, ext: strin
 }
 
 /**
- * Is `name` one of OUR emitted derivatives rather than a master that merely looks like one?
+ * Is `name` one of OUR emitted derivatives, a stale one, or a master that merely looks like one?
  *
  * Resolved by evidence, never by shape alone: a derivative exists only because a master was
  * encoded, so that master must be sitting beside it under the exact filename we derived from.
- * `siblings` holds the real filenames in the same directory.
+ * `siblings` holds the real filenames in the same directory. Getting this wrong is SILENT in both
+ * directions — a misclassified master is never optimized, never in the manifest, and nothing
+ * errors; `verifyImages`' `masters-not-in-manifest` check is the backstop that makes such a
+ * mistake loud rather than invisible.
  *
- * Getting this wrong is SILENT in both directions — a misclassified master is never optimized,
- * never in the manifest, and nothing errors. `verifyImages`' `masters-not-in-manifest` check is
- * the backstop that makes such a mistake loud rather than invisible.
- */
-/**
  * Three outcomes, not two — the missing third is what made a rename corrupt the tree.
  *
  * - `derivative`: shaped like ours AND its master is present. Skip silently; it is our output.
@@ -167,26 +163,36 @@ export async function findMasters(root: string, dir: string = root): Promise<Sca
     }
     if (!entry.isFile()) continue;
 
-    const kind = classify(entry.name, siblings);
-    if (kind === 'derivative') continue;
-    if (kind === 'orphaned-derivative') {
-      ignored.push({ publicPath, reason: 'orphaned-derivative' });
-      continue;
-    }
-
-    if (MASTER_RE.test(entry.name)) {
-      masters.push({ abs, publicPath });
-      continue;
-    }
-    // Not a master, not ours, but unmistakably an image. Reported rather than dropped: an
-    // AVIF-only source (boufin ships two today) would otherwise be scanned past in silence —
-    // no derivatives, no manifest entry, and invisible to the manifest-driven verifier.
-    if (IGNORED_IMAGE_RE.test(entry.name)) {
-      ignored.push({ publicPath, reason: reasonFor(entry.name) });
-    }
+    const classified = classifyFile(entry.name, abs, publicPath, siblings);
+    if (classified === undefined) continue;
+    if ('reason' in classified) ignored.push(classified);
+    else masters.push(classified);
   }
 
   return { masters, ignored };
+}
+
+/**
+ * One file's verdict: a master, an ignored image, or nothing to say about it.
+ *
+ * Split out of `findMasters` to keep that function within the complexity budget — the recursion
+ * and the per-file decision are two separate jobs and read better apart.
+ */
+function classifyFile(
+  name: string,
+  abs: string,
+  publicPath: string,
+  siblings: ReadonlySet<string>,
+): MasterFile | IgnoredFile | undefined {
+  const kind = classify(name, siblings);
+  if (kind === 'derivative') return undefined;
+  if (kind === 'orphaned-derivative') return { publicPath, reason: 'orphaned-derivative' };
+  if (MASTER_RE.test(name)) return { abs, publicPath };
+  // Not a master, not ours, but unmistakably an image. Reported rather than dropped: an AVIF-only
+  // source (boufin ships two today) would otherwise be scanned past in silence — no derivatives,
+  // no manifest entry, and invisible to the manifest-driven verifier.
+  if (IGNORED_IMAGE_RE.test(name)) return { publicPath, reason: reasonFor(name) };
+  return undefined;
 }
 
 /**

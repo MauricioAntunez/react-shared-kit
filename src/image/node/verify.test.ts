@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -193,6 +193,31 @@ describe('verifyImages', () => {
     });
     expect(r.issues.some((i) => i.kind === 'master-dimension-mismatch')).toBe(true);
     expect(r.issues.some((i) => i.kind === 'count-mismatch')).toBe(true);
+  });
+
+  it('PROPAGATES a readdir failure instead of floating the rejection', async () => {
+    const blog = join(dir, 'images', 'blog');
+    // 0111: traversable, so the master still stats and decodes, but not listable — the exact
+    // condition countDerivativesOnDisk rethrows for.
+    //
+    // Asserting only that verifyImages rejects proves nothing: findMasters walks the same
+    // directory afterwards and throws too, so the call rejects either way. What distinguishes an
+    // awaited call from a floated one is whether a rejection escapes into the process — floated,
+    // it is unowned, and Node kills the process on it by default.
+    const escaped: unknown[] = [];
+    const onUnhandled = (reason: unknown) => escaped.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    await chmod(blog, 0o111);
+    try {
+      await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir }).catch(
+        () => undefined,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(escaped).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      await chmod(blog, 0o755);
+    }
   });
 
   it('fails an entry whose class is not in the configured classes', async () => {

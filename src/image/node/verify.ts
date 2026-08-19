@@ -285,7 +285,7 @@ async function verifyEntry(
         `manifest records master dimensions ${entry.w}x${entry.h}, which cannot be checked ` +
         `against the file — re-run optimizeImages`,
     });
-    checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
+    await checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
     return;
   }
 
@@ -306,17 +306,24 @@ async function verifyEntry(
     // Only the ASPECT check is anchored to entry.w/entry.h, so only it is skipped. The remaining
     // checks read rung widths, the class name and the disk, and a developer should learn about a
     // missing derivative or a stale orphan in the same run rather than on a second trip.
-    checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
+    await checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
     return;
   }
 
   for (const rung of entry.rungs) {
     await checkRungFiles(masterDir, sourcePath, rung, entry, issues);
   }
-  checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
+  await checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
 }
 
-/** The checks that do NOT read `entry.w`/`entry.h`, so they run even against a stale manifest. */
+/**
+ * The checks that do NOT read `entry.w`/`entry.h`, so they run even against a stale manifest.
+ *
+ * MUST be awaited at every call site. It reads the filesystem, and `countDerivativesOnDisk`
+ * deliberately rethrows a non-ENOENT readdir error — floated, that rejection escapes the caller's
+ * try/catch and kills the process, and any issue it pushes lands after `ok` has been computed. A
+ * gate whose failure path is an unhandled rejection is the failure this module exists to remove.
+ */
 async function checkStructure(
   sourcePath: string,
   entry: ManifestEntry,
