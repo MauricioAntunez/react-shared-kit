@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import type { Rung } from '../types.ts';
-import type { Inversion } from './optimize.ts';
+import type { Inversion, Rung } from '../types.ts';
 
 export interface LedgerEntry {
   sha256: string;
@@ -14,14 +13,14 @@ export interface LedgerEntry {
    * requested ladder. Optional only for backward compatibility with a ledger written before this
    * field existed; `optimizeImages` measures from disk when it is absent.
    */
-  rungs?: Rung[];
+  rungs?: Rung[] | undefined;
   /**
    * Inversions recorded on the last encode, replayed for skipped masters.
    *
    * Without this, `OptimizeResult.inversions` empties out on every incremental run and a CI gate
    * on it passes vacuously — green forever on a warm cache while oversized AVIFs keep shipping.
    */
-  inversions?: Inversion[];
+  inversions?: Inversion[] | undefined;
 }
 
 export type Ledger = Record<string, LedgerEntry>;

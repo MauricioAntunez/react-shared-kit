@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -219,7 +219,7 @@ describe('optimizeImages', () => {
     expect(r.mastersFound).toBe(2);
   });
 
-  it('PROPAGATES a scan failure instead of reporting an empty success', async () => {
+  it('PROPAGATES a corrupt master instead of reporting an empty success', async () => {
     const blog = join(dir, 'images', 'blog');
     // A zero-byte file is a half-uploaded master. Swallowing this returned encoded:0/manifest:{}
     // that read as "nothing to do", skipped the manifest write, and left a stale manifest that
@@ -248,6 +248,91 @@ describe('optimizeImages', () => {
     // The emitted .avif rungs sit beside their master; classifying them as ignored would flood
     // the report with our own output on every incremental run.
     expect(second.ignored).toEqual([]);
+  });
+
+  it('does NOT re-adopt orphaned derivatives as masters after the master is renamed', async () => {
+    const blog = join(dir, 'images', 'blog');
+    await optimizeImages(opts);
+    // The ordinary result of `git mv` on an image. The leftovers used to be re-ingested as
+    // masters and re-encoded into derivatives-of-derivatives -- 24 garbage files from one rename,
+    // growing every build and never self-healing.
+    await rename(join(blog, 'foo.jpg'), join(blog, 'banner.jpg'));
+    const second = await optimizeImages(opts);
+
+    expect(Object.keys(second.manifest)).toEqual(['/images/blog/banner.jpg']);
+    expect(second.ignored.some((i) => i.reason === 'orphaned-derivative')).toBe(true);
+    expect(existsSync(join(blog, 'foo.jpg-480.webp-480.avif'))).toBe(false);
+
+    const third = await optimizeImages(opts);
+    expect(third.mastersFound).toBe(1);
+  });
+
+  it('treats .jfif and .jpe as the JPEGs they are, not unknown formats', async () => {
+    const blog = join(dir, 'images', 'blog');
+    // Chrome saved downloads as .jfif for years, so they land in public/ routinely, and sharp
+    // sniffs by content. Dropping them on extension alone was a silent skip.
+    await makeMaster(join(blog, 'chrome.jfif'), 1000, 600, 30);
+    const r = await optimizeImages(opts);
+    expect(r.manifest['/images/blog/chrome.jfif']).toBeDefined();
+  });
+
+  it('reports an APNG rather than letting it fall through both lists', async () => {
+    const blog = join(dir, 'images', 'blog');
+    await writeFile(join(blog, 'loader.apng'), 'not really an apng');
+    const r = await optimizeImages(opts);
+    const hit = r.ignored.find((i) => i.publicPath === '/images/blog/loader.apng');
+    expect(hit?.reason).toBe('animation-unsupported');
+  });
+
+  it('flags a missing sourceDir instead of reporting a successful empty run', async () => {
+    const r = await optimizeImages({ ...opts, sourceDir: join(dir, 'nowhere') });
+    expect(r.sourceDirMissing).toBe(true);
+    expect(r.mastersFound).toBe(0);
+  });
+
+  it('THROWS on an unreadable sourceDir rather than calling it empty', async () => {
+    const locked = join(dir, 'locked');
+    await mkdir(locked, { recursive: true });
+    await chmod(locked, 0o000);
+    try {
+      // existsSync() returns false for EACCES too, so this used to report "empty" and stay green
+      // forever in a CI container over a restrictive mount.
+      await expect(optimizeImages({ ...opts, sourceDir: join(locked, 'inner') })).rejects.toThrow();
+    } finally {
+      await chmod(locked, 0o755);
+    }
+  });
+
+  it('throws when sourceDir is a file rather than a directory', async () => {
+    const notDir = join(dir, 'a-file.txt');
+    await writeFile(notDir, 'x');
+    await expect(optimizeImages({ ...opts, sourceDir: notDir })).rejects.toThrow(/not a directory/);
+  });
+
+  it('re-encodes a ledger entry written before inversions were recorded', async () => {
+    await optimizeImages(opts);
+    const ledger: Record<string, { inversions?: unknown }> = JSON.parse(
+      await readFile(opts.ledgerPath, 'utf8'),
+    );
+    for (const entry of Object.values(ledger)) delete entry.inversions;
+    await writeFile(opts.ledgerPath, JSON.stringify(ledger));
+    // Replaying nothing would be the vacuous-green the field exists to prevent, narrowed to one
+    // ledger generation -- so a pre-inversions entry is stale by definition.
+    const second = await optimizeImages(opts);
+    expect(second.encoded).toBeGreaterThan(0);
+  });
+
+  it('PROPAGATES a readdir failure on a nested directory', async () => {
+    const locked = join(dir, 'images', 'blog', 'locked');
+    await mkdir(locked, { recursive: true });
+    await chmod(locked, 0o000);
+    try {
+      // The scan walks recursively, so a permission error deep in the tree must surface too --
+      // returning fewer masters than exist is indistinguishable from success.
+      await expect(optimizeImages(opts)).rejects.toThrow();
+    } finally {
+      await chmod(locked, 0o755);
+    }
   });
 
   it('does not write the manifest when sourceDir does not exist', async () => {

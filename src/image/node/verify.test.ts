@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -79,6 +79,22 @@ describe('verifyImages', () => {
     const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.kind === 'count-mismatch')).toBe(true);
+  });
+
+  it('SURFACES ignored files rather than computing and discarding them', async () => {
+    // A verify-only CI job is the natural split, since optimizeImages needs sharp and write
+    // access. Discarding this meant such a job could never learn about an AVIF used as a source.
+    await write(join(dir, 'images', 'blog', 'source.avif'), 800, 600);
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    expect(r.ignored.some((i) => i.publicPath === '/images/blog/source.avif')).toBe(true);
+  });
+
+  it('reports an unreadable file as unreadable, not as missing', async () => {
+    await writeFile(join(dir, 'images', 'blog', 'foo.jpg-480.webp'), 'not an image');
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    // Telling a developer a file they can see does not exist gives them no next step.
+    expect(r.issues.some((i) => i.kind === 'unreadable-file')).toBe(true);
+    expect(r.issues.some((i) => i.kind === 'missing-file')).toBe(false);
   });
 
   it('fails when a master on disk is ABSENT from the manifest', async () => {

@@ -3,6 +3,17 @@ import type { ImageManifest, Rung } from './types.ts';
 /** Vector sources pass through untouched: SVG scales from one file, so it is never rasterised. */
 const VECTOR_RE = /\.svgz?(\?|#|$)/i;
 
+/**
+ * Guarded because a bare `process.env.NODE_ENV` throws a ReferenceError wherever `process` is not
+ * defined, and it sits on the MISSING-ENTRY branch — so the benign degrade this component promises
+ * ("never blank a page") became a hard render failure instead. Vite and Next inject a define for
+ * it; a plain Rollup/esbuild bundle, a native-ESM load of `dist/`, or a non-Node runtime does not,
+ * and a library cannot assume its consumer's bundler config.
+ */
+function isProduction(): boolean {
+  return typeof process !== 'undefined' && process.env?.NODE_ENV === 'production';
+}
+
 export interface PictureProps {
   /** The manifest emitted by `optimizeImages`. */
   manifest: ImageManifest;
@@ -64,7 +75,7 @@ export function Picture({ manifest, src, alt, sizes, priority = false, className
     // A vector source has no manifest entry BY DESIGN: SVG scales to any size from one file, so
     // rasterising it into a width ladder would be a downgrade, and optimizeImages never treats it
     // as a master. Warning about it would cry wolf on every correct usage.
-    if (!VECTOR_RE.test(src) && process.env.NODE_ENV !== 'production') {
+    if (!VECTOR_RE.test(src) && !isProduction()) {
       console.warn(
         `[react-shared-kit] Picture: no manifest entry for "${src}" — serving the unoptimized ` +
           `master with no intrinsic dimensions. Check the path, or re-run optimizeImages.`,

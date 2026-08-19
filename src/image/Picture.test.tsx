@@ -91,6 +91,22 @@ describe('Picture', () => {
     warn.mockRestore();
   });
 
+  it('does NOT crash when `process` is undefined (non-Node bundle)', () => {
+    const saved = globalThis.process;
+    // @ts-expect-error deleting a global to simulate a bundle with no process shim
+    delete globalThis.process;
+    try {
+      // This is the MISSING-ENTRY branch, i.e. exactly the benign degrade the component promises
+      // never blanks a page. A bare process.env read turned it into a hard render failure.
+      const html = render(
+        <Picture manifest={MANIFEST} src="/images/blog/gone.jpg" alt="x" sizes="100vw" />,
+      );
+      expect(html).toContain('src="/images/blog/gone.jpg"');
+    } finally {
+      globalThis.process = saved;
+    }
+  });
+
   it('DOES warn for a raster src that is missing from the manifest', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     render(<Picture manifest={MANIFEST} src="/images/blog/typo.jpg" alt="x" sizes="100vw" />);

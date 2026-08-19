@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import sharp from 'sharp';
-import type { ImageClasses, ImageManifest, ManifestEntry, Rung } from '../types.ts';
+import type { ImageClasses, ImageManifest, Inversion, ManifestEntry, Rung } from '../types.ts';
 import { type EncodeFormat, encodeOne } from './encode.ts';
 import { fileSha256, type Ledger, type LedgerEntry, needsEncode, paramsKey } from './ledger.ts';
 import { derivativeName, findMasters, type IgnoredFile, type MasterFile } from './scan.ts';
@@ -17,13 +17,6 @@ export interface OptimizeOptions {
   ledgerPath: string;
   concurrency?: number | undefined;
   force?: boolean | undefined;
-}
-
-export interface Inversion {
-  path: string;
-  width: number;
-  avifBytes: number;
-  webpBytes: number;
 }
 
 export interface OptimizeResult {
@@ -60,6 +53,11 @@ export interface OptimizeResult {
    * first build, forever.
    */
   ledgerReset?: 'missing' | 'corrupt';
+  /**
+   * Set when `sourceDir` does not exist. Distinguishes a misconfigured path from a genuinely
+   * empty tree — both otherwise report mastersFound: 0 and look like success.
+   */
+  sourceDirMissing?: boolean;
 }
 
 type Formats = Required<NonNullable<OptimizeOptions['formats']>>;
@@ -264,7 +262,11 @@ async function processMaster(
   const entry = ledger[key];
   const outputsExist = (file: string) => existsSync(join(outDir, file));
 
-  if (!needsEncode({ entry, sha256, params, outputsExist })) {
+  // An entry written before `inversions` existed cannot replay them, and silently contributing
+  // none is the vacuous-green this field was added to prevent. Treat it as stale so one upgrade
+  // build re-encodes and repopulates it.
+  const predatesInversions = entry !== undefined && entry.inversions === undefined;
+  if (!predatesInversions && !needsEncode({ entry, sha256, params, outputsExist })) {
     result.skipped++;
     result.manifest[key] = manifestEntry(plan, await rungsForSkip(master, widths, entry));
     if (entry?.inversions) result.inversions.push(...entry.inversions);
@@ -344,7 +346,21 @@ export async function optimizeImages(options: OptimizeOptions): Promise<Optimize
     ignored: [],
   };
 
-  if (!existsSync(options.sourceDir)) return result;
+  // existsSync() returns false for ANY stat failure, so it silently swallowed EACCES (a CI
+  // container over a restrictive mount) and a dangling symlink into an absent sibling checkout —
+  // both reported as "the directory is empty" and green forever while nothing was optimized.
+  // Only ENOENT is data; everything else is an error.
+  const sourceStat = await stat(options.sourceDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (sourceStat === undefined) {
+    result.sourceDirMissing = true;
+    return result;
+  }
+  if (!sourceStat.isDirectory()) {
+    throw new Error(`optimizeImages: sourceDir is not a directory: ${options.sourceDir}`);
+  }
 
   const { masters, ignored } = await findMasters(options.sourceDir);
   result.ignored = ignored;

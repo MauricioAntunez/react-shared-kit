@@ -1,8 +1,8 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { dirname, join, parse } from 'node:path';
 import sharp from 'sharp';
 import type { ImageClasses, ImageManifest, ManifestEntry, Rung } from '../types.ts';
-import { findMasters } from './scan.ts';
+import { findMasters, type IgnoredFile } from './scan.ts';
 
 export type VerifyIssueKind =
   | 'missing-file'
@@ -10,12 +10,20 @@ export type VerifyIssueKind =
   | 'descriptor-mismatch'
   | 'undersized-master'
   | 'count-mismatch'
-  | 'master-not-in-manifest';
+  | 'master-not-in-manifest'
+  | 'unreadable-file';
 
 export interface VerifyIssue {
   kind: VerifyIssueKind;
   path: string;
   detail: string;
+}
+
+export interface VerifyResult {
+  ok: boolean;
+  issues: VerifyIssue[];
+  /** Images the scan saw but did not treat as masters. Never affects `ok` — see verifyImages. */
+  ignored: IgnoredFile[];
 }
 
 export interface VerifyOptions {
@@ -34,9 +42,37 @@ function derivativePatternFor(basename: string): RegExp {
   return new RegExp(`^${escapeRegExp(basename)}-\\d+\\.(avif|webp|jpe?g)$`, 'i');
 }
 
-async function measuredWidth(path: string): Promise<number | undefined> {
-  const metadata = await sharp(path).metadata();
-  return metadata.width;
+/**
+ * Measure a file, distinguishing absent from unreadable.
+ *
+ * sharp throws for three different reasons here — ENOENT, EACCES, and "unsupported image format"
+ * for a truncated or corrupt file. Flattening all three into "does not exist" tells a developer
+ * something false about a file they can see sitting there, and hides the actual fix.
+ */
+type Measurement =
+  | { kind: 'ok'; width: number | undefined }
+  | { kind: 'missing' }
+  | { kind: 'unreadable'; message: string };
+
+async function measure(path: string): Promise<Measurement> {
+  // Existence is decided by stat, not by sharp's error: sharp reports a missing file as
+  // "Input file is missing" with NO `code` property (verified against sharp 0.35), so branching on
+  // the thrown error would misfile every absent file as unreadable.
+  const exists = await stat(path).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    },
+  );
+  if (!exists) return { kind: 'missing' };
+
+  try {
+    const metadata = await sharp(path).metadata();
+    return { kind: 'ok', width: metadata.width };
+  } catch (error) {
+    return { kind: 'unreadable', message: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function checkRungFiles(
@@ -47,12 +83,29 @@ async function checkRungFiles(
 ): Promise<void> {
   for (const file of Object.values(rung.files)) {
     const filePath = join(masterDir, file);
-    const width = await measuredWidth(filePath).catch(() => undefined);
-    if (width === undefined) {
+    const measured = await measure(filePath);
+    if (measured.kind === 'missing') {
       issues.push({
         kind: 'missing-file',
         path: sourcePath,
         detail: `expected derivative file "${file}" for rung w=${rung.w} but it does not exist at ${filePath}`,
+      });
+      continue;
+    }
+    if (measured.kind === 'unreadable') {
+      issues.push({
+        kind: 'unreadable-file',
+        path: sourcePath,
+        detail: `derivative "${file}" exists at ${filePath} but could not be read: ${measured.message}`,
+      });
+      continue;
+    }
+    const { width } = measured;
+    if (width === undefined) {
+      issues.push({
+        kind: 'unreadable-file',
+        path: sourcePath,
+        detail: `derivative "${file}" at ${filePath} reported no width`,
       });
       continue;
     }
@@ -136,12 +189,29 @@ async function verifyEntry(
     await checkRungFiles(masterDir, sourcePath, rung, issues);
   }
 
-  const masterWidth = await measuredWidth(masterPath).catch(() => undefined);
-  if (masterWidth === undefined) {
+  const measuredMaster = await measure(masterPath);
+  if (measuredMaster.kind === 'missing') {
     issues.push({
       kind: 'missing-file',
       path: sourcePath,
       detail: `master image not found at ${masterPath}`,
+    });
+    return;
+  }
+  if (measuredMaster.kind === 'unreadable') {
+    issues.push({
+      kind: 'unreadable-file',
+      path: sourcePath,
+      detail: `master exists at ${masterPath} but could not be read: ${measuredMaster.message}`,
+    });
+    return;
+  }
+  const masterWidth = measuredMaster.width;
+  if (masterWidth === undefined) {
+    issues.push({
+      kind: 'unreadable-file',
+      path: sourcePath,
+      detail: `master at ${masterPath} reported no width`,
     });
     return;
   }
@@ -168,8 +238,8 @@ async function checkMastersInManifest(
   sourceDir: string,
   manifest: ImageManifest,
   issues: VerifyIssue[],
-): Promise<void> {
-  const { masters } = await findMasters(sourceDir);
+): Promise<IgnoredFile[]> {
+  const { masters, ignored } = await findMasters(sourceDir);
   for (const master of masters) {
     if (manifest[master.publicPath] === undefined) {
       issues.push({
@@ -181,18 +251,22 @@ async function checkMastersInManifest(
       });
     }
   }
+  return ignored;
 }
 
-export async function verifyImages(
-  options: VerifyOptions,
-): Promise<{ ok: boolean; issues: VerifyIssue[] }> {
+export async function verifyImages(options: VerifyOptions): Promise<VerifyResult> {
   const { manifest, classes, sourceDir } = options;
   const issues: VerifyIssue[] = [];
 
   for (const [sourcePath, entry] of Object.entries(manifest)) {
     await verifyEntry(sourcePath, entry, classes, sourceDir, issues);
   }
-  await checkMastersInManifest(sourceDir, manifest, issues);
+  const ignored = await checkMastersInManifest(sourceDir, manifest, issues);
 
-  return { ok: issues.length === 0, issues };
+  // `ignored` does not affect `ok`: an unsupported format is a fact about the tree, not proof the
+  // build is wrong, and failing on it would push consumers to disable the gate wholesale. But the
+  // scan already computed it, and discarding it meant a verify-only CI job — the natural split,
+  // since optimizeImages needs sharp and write access — could never learn about an AVIF used as a
+  // source or a stale orphaned derivative.
+  return { ok: issues.length === 0, issues, ignored };
 }

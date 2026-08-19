@@ -38,3 +38,16 @@ export interface SizeEntry {
   minWidth?: string | undefined;
   value: string;
 }
+
+/**
+ * A rung whose AVIF came out no smaller than its WebP sibling.
+ *
+ * AVIF is still emitted and still served first — the inversion means the SOURCE is an
+ * already-lossy re-encode being asked to act as a master, not that the chain should reorder.
+ */
+export interface Inversion {
+  path: string;
+  width: number;
+  avifBytes: number;
+  webpBytes: number;
+}
