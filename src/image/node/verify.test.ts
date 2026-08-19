@@ -15,11 +15,11 @@ async function write(path: string, width: number, height: number) {
     .toFile(path);
 }
 
-function manifest(rungW: number): ImageManifest {
+function manifest(rungW: number, masterW = 1000, masterH = 600): ImageManifest {
   return {
     '/images/blog/foo.jpg': {
-      w: 1000,
-      h: 600,
+      w: masterW,
+      h: masterH,
       class: 'content',
       rungs: [
         {
@@ -67,7 +67,13 @@ describe('verifyImages', () => {
 
   it('fails when a derivative is wider than its master', async () => {
     await write(join(dir, 'images', 'blog', 'foo.jpg'), 300, 200);
-    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    // The manifest must describe the master accurately, or master-dimension-mismatch fires first
+    // and returns — every later check reads entry.w/entry.h and would blame the wrong thing.
+    const r = await verifyImages({
+      manifest: manifest(480, 300, 200),
+      classes: CLASSES,
+      sourceDir: dir,
+    });
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.kind === 'upscale')).toBe(true);
   });
@@ -115,6 +121,43 @@ describe('verifyImages', () => {
     expect(r.ok).toBe(true);
   });
 
+  it('fails when the MASTER no longer matches the dimensions the manifest records', async () => {
+    await write(join(dir, 'images', 'blog', 'foo.jpg'), 1000, 800);
+    // Swap a master for a different crop at the SAME width: derivatives still agree with the
+    // manifest, the manifest still agrees with itself, and every page renders the previous image
+    // at a declared aspect ratio that no longer matches it.
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === 'master-dimension-mismatch')).toBe(true);
+  });
+
+  it('reports a zero-dimension manifest entry instead of skipping the aspect check', async () => {
+    const r = await verifyImages({
+      manifest: manifest(480, 0, 0),
+      classes: CLASSES,
+      sourceDir: dir,
+    });
+    // w: 0 was the one value that turned the check off, silently — and it is exactly the kind of
+    // drift an untrusted on-disk manifest produces.
+    expect(r.issues.some((i) => i.kind === 'invalid-manifest-entry')).toBe(true);
+  });
+
+  it('measures an EXIF-rotated master on the ORIENTED axis, matching the manifest', async () => {
+    const blog = join(dir, 'images', 'blog');
+    await sharp({ create: { width: 1000, height: 600, channels: 3, background: '#246' } })
+      .withMetadata({ orientation: 6 })
+      .jpeg()
+      .toFile(join(blog, 'foo.jpg'));
+    // optimizeImages records ORIENTED dimensions (600x1000). If verify measured STORED ones it
+    // would report a dimension mismatch on a perfectly good master.
+    const r = await verifyImages({
+      manifest: manifest(480, 600, 1000),
+      classes: CLASSES,
+      sourceDir: dir,
+    });
+    expect(r.issues.some((i) => i.kind === 'master-dimension-mismatch')).toBe(false);
+  });
+
   it('fails when a master on disk is ABSENT from the manifest', async () => {
     // verifyImages iterates the manifest, so every way a master can go missing FROM the manifest
     // was invisible to it — a stale manifest, a misclassified file, or an image added since the
@@ -128,10 +171,11 @@ describe('verifyImages', () => {
 
   it('fails on a master below its class masterMin', async () => {
     await write(join(dir, 'images', 'blog', 'foo.jpg'), 600, 400);
-    const m = manifest(480);
-    const entry = m['/images/blog/foo.jpg'];
-    if (entry) entry.w = 600;
-    const r = await verifyImages({ manifest: m, classes: CLASSES, sourceDir: dir });
+    const r = await verifyImages({
+      manifest: manifest(480, 600, 400),
+      classes: CLASSES,
+      sourceDir: dir,
+    });
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.kind === 'undersized-master')).toBe(true);
   });

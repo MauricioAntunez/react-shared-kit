@@ -1,8 +1,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import { dirname, join, parse } from 'node:path';
-import sharp from 'sharp';
 import type { ImageClasses, ImageManifest, ManifestEntry, Rung } from '../types.ts';
-import { findMasters, type IgnoredFile } from './scan.ts';
+import { findMasters, type IgnoredFile, orientedSize } from './scan.ts';
 
 export type VerifyIssueKind =
   | 'missing-file'
@@ -12,7 +11,9 @@ export type VerifyIssueKind =
   | 'count-mismatch'
   | 'master-not-in-manifest'
   | 'unreadable-file'
-  | 'aspect-mismatch';
+  | 'aspect-mismatch'
+  | 'master-dimension-mismatch'
+  | 'invalid-manifest-entry';
 
 export interface VerifyIssue {
   kind: VerifyIssueKind;
@@ -69,8 +70,10 @@ async function measure(path: string): Promise<Measurement> {
   if (!exists) return { kind: 'missing' };
 
   try {
-    const metadata = await sharp(path).metadata();
-    return { kind: 'ok', width: metadata.width, height: metadata.height };
+    // Oriented, not stored: the manifest records oriented dimensions, so comparing stored ones
+    // would misjudge every EXIF-rotated master in both directions.
+    const { width, height } = await orientedSize(path);
+    return { kind: 'ok', width, height };
   } catch (error) {
     return { kind: 'unreadable', message: error instanceof Error ? error.message : String(error) };
   }
@@ -134,7 +137,17 @@ function checkAspect(
   entry: ManifestEntry,
   issues: VerifyIssue[],
 ): void {
-  if (height === undefined || entry.w === 0) return;
+  if (entry.w <= 0 || entry.h <= 0) {
+    issues.push({
+      kind: 'invalid-manifest-entry',
+      path: sourcePath,
+      detail:
+        `manifest records master dimensions ${entry.w}x${entry.h}, so aspect cannot be checked — ` +
+        `re-run optimizeImages`,
+    });
+    return;
+  }
+  if (height === undefined) return;
   const expected = Math.round((width * entry.h) / entry.w);
   // 1px of slack for the encoder rounding a half-pixel.
   if (Math.abs(height - expected) <= 1) return;
@@ -184,7 +197,12 @@ function checkUndersizedMaster(
 
 async function countDerivativesOnDisk(masterDir: string, basename: string): Promise<number> {
   const pattern = derivativePatternFor(basename);
-  const names = await readdir(masterDir).catch(() => [] as string[]);
+  // ENOENT only: an unreadable directory reported as "zero files" would blame the manifest for a
+  // filesystem problem, in the one module whose subject is not conflating absence with failure.
+  const names = await readdir(masterDir).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [] as string[];
+    throw error;
+  });
   return names.filter((name) => pattern.test(name)).length;
 }
 
@@ -241,6 +259,25 @@ async function verifyEntry(
       path: sourcePath,
       detail: `master at ${masterPath} reported no width`,
     });
+    return;
+  }
+
+  // The manifest's own record of the master must be checked before anything anchored to it.
+  // `checkAspect` proves a derivative agrees with `entry.w`/`entry.h`; nothing proved those agree
+  // with the file on disk. Swap a master for a different crop at the same width and manifest and
+  // derivatives stay mutually consistent, both wrong, and the gate goes green while every page
+  // renders the previous image at a declared aspect ratio that no longer matches it.
+  const masterHeight = measuredMaster.height;
+  if (masterWidth !== entry.w || (masterHeight !== undefined && masterHeight !== entry.h)) {
+    issues.push({
+      kind: 'master-dimension-mismatch',
+      path: sourcePath,
+      detail:
+        `master at ${masterPath} measures ${masterWidth}x${masterHeight}, but the manifest ` +
+        `records ${entry.w}x${entry.h} — the manifest is stale; re-run optimizeImages`,
+    });
+    // Every remaining check reads entry.w/entry.h, so continuing would blame the derivatives for
+    // a manifest that is itself wrong.
     return;
   }
 

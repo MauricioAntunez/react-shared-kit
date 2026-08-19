@@ -6,7 +6,13 @@ import sharp from 'sharp';
 import type { ImageClasses, ImageManifest, Inversion, ManifestEntry, Rung } from '../types.ts';
 import { type EncodeFormat, encodeOne } from './encode.ts';
 import { fileSha256, type Ledger, type LedgerEntry, needsEncode, paramsKey } from './ledger.ts';
-import { derivativeName, findMasters, type IgnoredFile, type MasterFile } from './scan.ts';
+import {
+  derivativeName,
+  findMasters,
+  type IgnoredFile,
+  type MasterFile,
+  orientedSize,
+} from './scan.ts';
 
 export interface OptimizeOptions {
   sourceDir: string;
@@ -52,7 +58,7 @@ export interface OptimizeResult {
    * from a corrupt one — otherwise a ledger being clobbered every run looks exactly like a normal
    * first build, forever.
    */
-  ledgerReset?: 'missing' | 'corrupt' | undefined;
+  ledgerReset?: 'missing' | 'corrupt' | 'unreadable' | undefined;
   /**
    * Set when `sourceDir` does not exist. Distinguishes a misconfigured path from a genuinely
    * empty tree — both otherwise report mastersFound: 0 and look like success.
@@ -232,11 +238,18 @@ async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Prom
  */
 async function loadLedger(
   path: string,
-): Promise<{ ledger: Ledger; reset?: 'missing' | 'corrupt' }> {
+): Promise<{ ledger: Ledger; reset?: 'missing' | 'corrupt' | 'unreadable' }> {
   let raw: string;
   try {
     raw = await readFile(path, 'utf8');
-  } catch {
+  } catch (error) {
+    // Only ENOENT is data — the same rule optimizeImages applies to sourceDir and measure() applies
+    // in verify.ts. An unreadable ledger reported as 'missing' is indistinguishable from a first
+    // build, so incrementality dies every run and the one field meant to surface that points away
+    // from the cause.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { ledger: {}, reset: 'unreadable' };
+    }
     return { ledger: {}, reset: 'missing' };
   }
   try {
@@ -302,23 +315,6 @@ function sortManifest(manifest: ImageManifest): ImageManifest {
     if (entry) sorted[key] = entry;
   }
   return sorted;
-}
-
-/**
- * Intrinsic size AFTER EXIF auto-orientation.
- *
- * `sharp().metadata()` reports the stored, pre-rotation dimensions, but imagetools-core's
- * `autoOrient` transform runs before the resize — so for EXIF orientations 5–8 (the 90°/270°
- * cases) the axes are swapped relative to what actually gets encoded. Measuring the stored width
- * would truncate the ladder against the wrong axis AND make every descriptor a lie: a 1000x600
- * master stored with orientation 6 encodes to 600px wide, so a rung named `-768` would really be
- * 600w. Verified against sharp 0.35 / imagetools-core 10 (2026-08-19).
- */
-async function orientedSize(abs: string): Promise<{ width: number; height: number }> {
-  const meta = await sharp(abs).metadata();
-  const w = meta.width ?? 0;
-  const h = meta.height ?? 0;
-  return (meta.orientation ?? 1) >= 5 ? { width: h, height: w } : { width: w, height: h };
 }
 
 /**

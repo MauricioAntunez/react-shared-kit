@@ -335,6 +335,21 @@ describe('optimizeImages', () => {
     }
   });
 
+  it('distinguishes an UNREADABLE ledger from an absent one', async () => {
+    await optimizeImages(opts);
+    // write-only: the READ fails, the end-of-run write still succeeds, so the reset reason is
+    // observable in the result rather than masked by a write error.
+    await chmod(opts.ledgerPath, 0o222);
+    try {
+      const r = await optimizeImages(opts);
+      // Reported as 'missing', a 589-byte ledger sitting on disk is indistinguishable from a
+      // first build: incrementality dies every run and the diagnostic points away from the cause.
+      expect(r.ledgerReset).toBe('unreadable');
+    } finally {
+      await chmod(opts.ledgerPath, 0o644);
+    }
+  });
+
   it('flags an existing but master-less sourceDir distinctly from a missing one', async () => {
     const empty = join(dir, 'empty2');
     await mkdir(empty, { recursive: true });

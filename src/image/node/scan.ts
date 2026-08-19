@@ -1,5 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import sharp from 'sharp';
 
 export interface MasterFile {
   /** Absolute filesystem path. */
@@ -15,6 +16,7 @@ export interface IgnoredFile {
     | 'output-format-as-source'
     | 'animation-unsupported'
     | 'unsupported-source-format'
+    | 'not-an-accepted-master-format'
     | 'orphaned-derivative';
 }
 
@@ -46,9 +48,14 @@ const MASTER_RE = /\.(jpg|jpeg|jfif|jfi|jif|jpe|png|webp)$/i;
 const IGNORED_IMAGE_RE =
   /\.(avif|avifs|gif|apng|bmp|dib|tiff?|heic|heics|heif|heifs|hif|jxl|ico|cur|jp2|j2k|jpf|jpx|jpm|mj2|tga|icb|vda|vst|dng|cr2|cr3|nef|arw|orf|rw2|raf|srw|pef|x3f|erf|kdc|mos|iiq|3fr|psd|psb|xcf|pbm|pgm|ppm|pnm|pam|pfm|exr|hdr|pcx|wbmp|ras|sgi|rgb|qoi)$/i;
 
+/** Formats sharp CAN decode but that are excluded by policy — the remedy is to convert, not to
+ * give up, so they must not read as "unsupported". */
+const DECODABLE_RE = /\.(tiff?|heic|heif|hif|jp2|j2k|jpf|jpx|jxl|gif|apng)$/i;
+
 function reasonFor(name: string): IgnoredFile['reason'] {
   if (/\.avif$/i.test(name)) return 'output-format-as-source';
   if (/\.(gif|apng|avifs|heics|heifs|mj2)$/i.test(name)) return 'animation-unsupported';
+  if (DECODABLE_RE.test(name)) return 'not-an-accepted-master-format';
   return 'unsupported-source-format';
 }
 
@@ -152,4 +159,28 @@ export async function findMasters(root: string, dir: string = root): Promise<Sca
   }
 
   return { masters, ignored };
+}
+
+/**
+ * Intrinsic size AFTER EXIF auto-orientation.
+ *
+ * `sharp().metadata()` reports STORED dimensions, but imagetools-core auto-orients before
+ * resizing, so for EXIF orientations 5-8 the axes are swapped relative to what is actually
+ * encoded. Shared by the generator and the verifier deliberately: when only the generator applied
+ * the swap, the verifier compared a rotated master's stored width against the manifest's oriented
+ * width and drew the wrong conclusion in both directions.
+ *
+ * An unmeasurable master THROWS rather than defaulting to zero. A zero propagates into the ladder
+ * as "no rungs" and into the manifest as `w: 0`, which is silent everywhere and disables the
+ * verifier's aspect check on the one entry most likely to be corrupt.
+ */
+export async function orientedSize(abs: string): Promise<{ width: number; height: number }> {
+  const meta = await sharp(abs).metadata();
+  if (meta.width === undefined || meta.height === undefined) {
+    throw new Error(`cannot read intrinsic dimensions of ${abs}`);
+  }
+  const swapped = (meta.orientation ?? 1) >= 5;
+  return swapped
+    ? { width: meta.height, height: meta.width }
+    : { width: meta.width, height: meta.height };
 }
