@@ -137,20 +137,18 @@ function checkAspect(
   entry: ManifestEntry,
   issues: VerifyIssue[],
 ): void {
-  if (entry.w <= 0 || entry.h <= 0) {
-    issues.push({
-      kind: 'invalid-manifest-entry',
-      path: sourcePath,
-      detail:
-        `manifest records master dimensions ${entry.w}x${entry.h}, so aspect cannot be checked — ` +
-        `re-run optimizeImages`,
-    });
-    return;
-  }
+  // Non-positive dimensions are rejected by `verifyEntry` before any rung is examined, so this is
+  // a guard against a direct call rather than a reachable path — it must still never divide by
+  // zero, and must never report "passed".
+  if (entry.w <= 0 || entry.h <= 0) return;
   if (height === undefined) return;
+  // EXACT, no slack. Generation is deterministic — imagetools computes
+  // `round(width / originalAspect)`, which is the same integer arithmetic redone here — and any
+  // change to the master regenerates every derivative, so a pixel-perfect match is always
+  // reachable. Measured across 288 real encodes (11 odd master sizes x 11 ladder widths x 3
+  // formats) the delta was 0 every time. Tolerance here could only ever hide a real mismatch.
   const expected = Math.round((width * entry.h) / entry.w);
-  // 1px of slack for the encoder rounding a half-pixel.
-  if (Math.abs(height - expected) <= 1) return;
+  if (height === expected) return;
   issues.push({
     kind: 'aspect-mismatch',
     path: sourcePath,
@@ -185,7 +183,21 @@ function checkUndersizedMaster(
   issues: VerifyIssue[],
 ): void {
   const classDef = classes[entry.class];
-  if (!classDef) return;
+  if (!classDef) {
+    // Returning silently made "this entry names a class that no longer exists" indistinguishable
+    // from "this entry passed" — and `optimizeImages` treats the same condition as fatal, so the
+    // permissive half was the one running as the gate. Reachable exactly in the verify-only split
+    // this module advertises: rename a class, and every entry still carrying the old name goes
+    // unchecked, silently and permanently, with CI green.
+    issues.push({
+      kind: 'invalid-manifest-entry',
+      path: sourcePath,
+      detail:
+        `manifest records class "${entry.class}", which is not among the configured classes ` +
+        `(${Object.keys(classes).join(', ')}) — the masterMin check cannot run; re-run optimizeImages`,
+    });
+    return;
+  }
   if (masterWidth < classDef.masterMin) {
     issues.push({
       kind: 'undersized-master',
@@ -231,10 +243,10 @@ async function verifyEntry(
   const masterPath = join(sourceDir, sourcePath);
   const masterDir = dirname(masterPath);
 
-  for (const rung of entry.rungs) {
-    await checkRungFiles(masterDir, sourcePath, rung, entry, issues);
-  }
-
+  // The master is measured FIRST, before any per-rung check. `checkAspect` compares a derivative
+  // against `entry.w`/`entry.h`, so running the rungs first meant a stale manifest produced one
+  // "the file does not come from this master" accusation per derivative — about files that did
+  // come from it — while the real cause was reported last.
   const measuredMaster = await measure(masterPath);
   if (measuredMaster.kind === 'missing') {
     issues.push({
@@ -262,6 +274,21 @@ async function verifyEntry(
     return;
   }
 
+  // A non-positive dimension is invalid on its own terms, so it is judged before any comparison:
+  // reporting "measures 1000x600 but the manifest records 0x0" would name the master as the
+  // problem when the manifest is simply malformed.
+  if (entry.w <= 0 || entry.h <= 0) {
+    issues.push({
+      kind: 'invalid-manifest-entry',
+      path: sourcePath,
+      detail:
+        `manifest records master dimensions ${entry.w}x${entry.h}, which cannot be checked ` +
+        `against the file — re-run optimizeImages`,
+    });
+    checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
+    return;
+  }
+
   // The manifest's own record of the master must be checked before anything anchored to it.
   // `checkAspect` proves a derivative agrees with `entry.w`/`entry.h`; nothing proved those agree
   // with the file on disk. Swap a master for a different crop at the same width and manifest and
@@ -276,11 +303,28 @@ async function verifyEntry(
         `master at ${masterPath} measures ${masterWidth}x${masterHeight}, but the manifest ` +
         `records ${entry.w}x${entry.h} — the manifest is stale; re-run optimizeImages`,
     });
-    // Every remaining check reads entry.w/entry.h, so continuing would blame the derivatives for
-    // a manifest that is itself wrong.
+    // Only the ASPECT check is anchored to entry.w/entry.h, so only it is skipped. The remaining
+    // checks read rung widths, the class name and the disk, and a developer should learn about a
+    // missing derivative or a stale orphan in the same run rather than on a second trip.
+    checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
     return;
   }
 
+  for (const rung of entry.rungs) {
+    await checkRungFiles(masterDir, sourcePath, rung, entry, issues);
+  }
+  checkStructure(sourcePath, entry, classes, masterWidth, masterDir, issues);
+}
+
+/** The checks that do NOT read `entry.w`/`entry.h`, so they run even against a stale manifest. */
+async function checkStructure(
+  sourcePath: string,
+  entry: ManifestEntry,
+  classes: ImageClasses,
+  masterWidth: number,
+  masterDir: string,
+  issues: VerifyIssue[],
+): Promise<void> {
   checkUpscale(sourcePath, entry.rungs, masterWidth, issues);
   checkUndersizedMaster(sourcePath, entry, classes, masterWidth, issues);
 

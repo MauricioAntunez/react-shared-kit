@@ -112,6 +112,15 @@ describe('verifyImages', () => {
     expect(r.issues.some((i) => i.kind === 'aspect-mismatch')).toBe(true);
   });
 
+  it('fails a derivative off by exactly ONE pixel — generation is deterministic', async () => {
+    // 1000x600 master, 480w rung => expected height exactly 288. Writing 289 must fail: any
+    // change to the master regenerates every derivative, so a pixel-perfect match is always
+    // reachable and slack could only ever hide a real mismatch.
+    await write(join(dir, 'images', 'blog', 'foo.jpg-480.webp'), 480, 289);
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    expect(r.issues.some((i) => i.kind === 'aspect-mismatch')).toBe(true);
+  });
+
   it('keeps ok independent of ignored — ignored is advisory', async () => {
     await write(join(dir, 'images', 'blog', 'source.avif'), 800, 600);
     const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
@@ -156,6 +165,47 @@ describe('verifyImages', () => {
       sourceDir: dir,
     });
     expect(r.issues.some((i) => i.kind === 'master-dimension-mismatch')).toBe(false);
+  });
+
+  it('does not accuse innocent derivatives when the MANIFEST is the stale part', async () => {
+    await write(join(dir, 'images', 'blog', 'foo.jpg'), 1600, 1200);
+    await write(join(dir, 'images', 'blog', 'foo.jpg-480.avif'), 480, 360);
+    await write(join(dir, 'images', 'blog', 'foo.jpg-480.webp'), 480, 360);
+    await write(join(dir, 'images', 'blog', 'foo.jpg-480.jpg'), 480, 360);
+    // The derivatives genuinely come from this master; only the manifest height is stale. Running
+    // the rung checks first produced one "does not come from this master" accusation per file.
+    const r = await verifyImages({
+      manifest: manifest(480, 1600, 1000),
+      classes: CLASSES,
+      sourceDir: dir,
+    });
+    expect(r.issues.some((i) => i.kind === 'master-dimension-mismatch')).toBe(true);
+    expect(r.issues.some((i) => i.kind === 'aspect-mismatch')).toBe(false);
+  });
+
+  it('still reports a stale orphan while the manifest is stale, not on a second trip', async () => {
+    await write(join(dir, 'images', 'blog', 'foo.jpg'), 1600, 1200);
+    await write(join(dir, 'images', 'blog', 'foo.jpg-999.webp'), 999, 749);
+    const r = await verifyImages({
+      manifest: manifest(480, 1600, 1000),
+      classes: CLASSES,
+      sourceDir: dir,
+    });
+    expect(r.issues.some((i) => i.kind === 'master-dimension-mismatch')).toBe(true);
+    expect(r.issues.some((i) => i.kind === 'count-mismatch')).toBe(true);
+  });
+
+  it('fails an entry whose class is not in the configured classes', async () => {
+    // optimizeImages treats an unknown class as fatal; returning silently here made the
+    // permissive half the one running as the gate. Reachable whenever a class is renamed and a
+    // committed manifest still carries the old name.
+    const r = await verifyImages({
+      manifest: manifest(480),
+      classes: { other: { widths: [480], masterMin: 480 } },
+      sourceDir: dir,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === 'invalid-manifest-entry')).toBe(true);
   });
 
   it('fails when a master on disk is ABSENT from the manifest', async () => {

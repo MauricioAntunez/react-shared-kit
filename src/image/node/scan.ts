@@ -48,14 +48,42 @@ const MASTER_RE = /\.(jpg|jpeg|jfif|jfi|jif|jpe|png|webp)$/i;
 const IGNORED_IMAGE_RE =
   /\.(avif|avifs|gif|apng|bmp|dib|tiff?|heic|heics|heif|heifs|hif|jxl|ico|cur|jp2|j2k|jpf|jpx|jpm|mj2|tga|icb|vda|vst|dng|cr2|cr3|nef|arw|orf|rw2|raf|srw|pef|x3f|erf|kdc|mos|iiq|3fr|psd|psb|xcf|pbm|pgm|ppm|pnm|pam|pfm|exr|hdr|pcx|wbmp|ras|sgi|rgb|qoi)$/i;
 
-/** Formats sharp CAN decode but that are excluded by policy — the remedy is to convert, not to
- * give up, so they must not read as "unsupported". */
-const DECODABLE_RE = /\.(tiff?|heic|heif|hif|jp2|j2k|jpf|jpx|jxl|gif|apng)$/i;
+/**
+ * Extension → the sharp format key that decodes it.
+ *
+ * Only used to pick a diagnostic message, and deliberately NOT a hardcoded "sharp can read this"
+ * list: sharp's prebuilt libvips ships with JPEG 2000 and JPEG XL input DISABLED, so claiming they
+ * are decodable would tell a developer to convert a file that sharp will refuse to open. The
+ * capability is read from `sharp.format` at runtime, so this stays true against whatever libvips
+ * build the consumer actually installed rather than against the one present when this was written.
+ */
+const SHARP_FORMAT_BY_EXT: Record<string, string> = {
+  tif: 'tiff',
+  tiff: 'tiff',
+  heic: 'heif',
+  heif: 'heif',
+  hif: 'heif',
+  jp2: 'jp2',
+  j2k: 'jp2',
+  jpf: 'jp2',
+  jpx: 'jp2',
+  jxl: 'jxl',
+  gif: 'gif',
+  apng: 'png',
+};
+
+function isDecodableBySharp(name: string): boolean {
+  const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+  const format = SHARP_FORMAT_BY_EXT[ext];
+  if (format === undefined) return false;
+  return sharp.format[format as keyof typeof sharp.format]?.input?.file === true;
+}
 
 function reasonFor(name: string): IgnoredFile['reason'] {
   if (/\.avif$/i.test(name)) return 'output-format-as-source';
   if (/\.(gif|apng|avifs|heics|heifs|mj2)$/i.test(name)) return 'animation-unsupported';
-  if (DECODABLE_RE.test(name)) return 'not-an-accepted-master-format';
+  // Decodable but excluded by policy: the remedy is to convert, not to give up.
+  if (isDecodableBySharp(name)) return 'not-an-accepted-master-format';
   return 'unsupported-source-format';
 }
 
@@ -170,14 +198,25 @@ export async function findMasters(root: string, dir: string = root): Promise<Sca
  * the swap, the verifier compared a rotated master's stored width against the manifest's oriented
  * width and drew the wrong conclusion in both directions.
  *
- * An unmeasurable master THROWS rather than defaulting to zero. A zero propagates into the ladder
- * as "no rungs" and into the manifest as `w: 0`, which is silent everywhere and disables the
- * verifier's aspect check on the one entry most likely to be corrupt.
+ * When the header does not carry dimensions, this DECODES the image to measure them rather than
+ * failing — an image that is perfectly usable must not break a build. What it must never do is
+ * default to zero: the previous `?? 0` is how `w: 0` reached the manifest, where it is silent
+ * everywhere and disables the verifier's aspect check on the entry most likely to be corrupt. An
+ * image that cannot be decoded at all still throws, from sharp itself.
+ *
+ * Honest caveat: on sharp 0.35 / libvips 8.18 this fallback is UNREACHABLE and therefore not
+ * covered by a test that can fail. Probed with truncated JPEGs (corrupt header → throws), an SVG
+ * with only a viewBox (resolves to 300x150), 16-bit and CMYK inputs — `metadata()` either yields
+ * both dimensions or throws, never one without the other. It is kept as defence against a
+ * different libvips build or a future format, not because a case is known to reach it.
  */
 export async function orientedSize(abs: string): Promise<{ width: number; height: number }> {
   const meta = await sharp(abs).metadata();
   if (meta.width === undefined || meta.height === undefined) {
-    throw new Error(`cannot read intrinsic dimensions of ${abs}`);
+    // `autoOrient()` so the decoded dimensions already carry the EXIF swap, matching the branch
+    // below rather than needing it reapplied.
+    const { info } = await sharp(abs).autoOrient().toBuffer({ resolveWithObject: true });
+    return { width: info.width, height: info.height };
   }
   const swapped = (meta.orientation ?? 1) >= 5;
   return swapped
