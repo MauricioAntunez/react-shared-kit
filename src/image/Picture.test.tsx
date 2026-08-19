@@ -1,0 +1,146 @@
+import type { ReactElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it, vi } from 'vitest';
+import { Picture } from './Picture.tsx';
+import type { ImageManifest } from './types.ts';
+
+const MANIFEST: ImageManifest = {
+  '/images/blog/foo.jpg': {
+    w: 1600,
+    h: 900,
+    class: 'content',
+    rungs: [
+      { w: 480, files: { avif: 'foo-480.avif', webp: 'foo-480.webp', jpeg: 'foo-480.jpg' } },
+      { w: 1024, files: { avif: 'foo-1024.avif', webp: 'foo-1024.webp', jpeg: 'foo-1024.jpg' } },
+    ],
+  },
+};
+
+const render = (el: ReactElement) => renderToStaticMarkup(el);
+
+describe('Picture', () => {
+  it('lists AVIF BEFORE WebP — AVIF-first is unconditional (D11)', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/foo.jpg" alt="A post" sizes="100vw" />,
+    );
+    expect(html.indexOf('image/avif')).toBeLessThan(html.indexOf('image/webp'));
+    expect(html.indexOf('image/avif')).toBeGreaterThan(-1);
+  });
+
+  it('uses the SMALLEST rung as the img src (mobile-first, D7)', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/foo.jpg" alt="A post" sizes="100vw" />,
+    );
+    expect(html).toContain('src="/images/blog/foo-480.jpg"');
+    expect(html).not.toContain('src="/images/blog/foo-1024.jpg"');
+  });
+
+  it('builds srcset descriptors from the MEASURED rung widths', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/foo.jpg" alt="A post" sizes="100vw" />,
+    );
+    expect(html).toContain('/images/blog/foo-480.avif 480w');
+    expect(html).toContain('/images/blog/foo-1024.avif 1024w');
+  });
+
+  it('emits intrinsic width and height for CLS', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/foo.jpg" alt="A post" sizes="100vw" />,
+    );
+    expect(html).toContain('width="1600"');
+    expect(html).toContain('height="900"');
+  });
+
+  it('is lazy by default', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/foo.jpg" alt="A post" sizes="100vw" />,
+    );
+    expect(html).toContain('loading="lazy"');
+    expect(html).toContain('decoding="async"');
+  });
+
+  it('priority flips to eager + fetchpriority=high for the LCP image', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/foo.jpg" alt="A" sizes="100vw" priority />,
+    );
+    expect(html).toContain('loading="eager"');
+    // Case-insensitive on purpose: React 19 emits camelCase `fetchPriority`, and HTML attribute
+    // names are case-insensitive, so both spellings are correct output. Asserting the exact
+    // lowercase string would fail a correct component and push the fix into the wrong file.
+    expect(html).toMatch(/fetchpriority="high"/i);
+  });
+
+  it('degrades to a plain img on an unknown src rather than throwing', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/missing.jpg" alt="Gone" sizes="100vw" />,
+    );
+    expect(html).not.toContain('<picture');
+    expect(html).toContain('src="/images/blog/missing.jpg"');
+    expect(html).toContain('alt="Gone"');
+  });
+
+  it('passes an SVG through as a plain img WITHOUT warning — vectors are not rasterised', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const html = render(
+      <Picture manifest={MANIFEST} src="/logos/mark.svg" alt="Logo" sizes="100vw" />,
+    );
+    expect(html).toContain('src="/logos/mark.svg"');
+    expect(html).not.toContain('<picture');
+    // An SVG has no manifest entry by design; warning here would fire on every correct usage.
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('is SILENT in production — the warning must never reach end users', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const saved = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      // Guarding with `typeof process !== undefined` inverts this: a bundler substitutes the
+      // define but cannot fold the typeof, so in a browser the guard is false at runtime and the
+      // warning ships to every user forever — devaluing the one signal a mistyped src has.
+      render(<Picture manifest={MANIFEST} src="/images/blog/typo.jpg" alt="x" sizes="100vw" />);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      process.env.NODE_ENV = saved;
+      warn.mockRestore();
+    }
+  });
+
+  it('does NOT crash when `process` is undefined (non-Node bundle)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const saved = globalThis.process;
+    // @ts-expect-error deleting a global to simulate a bundle with no process shim
+    delete globalThis.process;
+    try {
+      // This is the MISSING-ENTRY branch, i.e. exactly the benign degrade the component promises
+      // never blanks a page. A bare process.env read turned it into a hard render failure.
+      const html = render(
+        <Picture manifest={MANIFEST} src="/images/blog/gone.jpg" alt="x" sizes="100vw" />,
+      );
+      expect(html).toContain('src="/images/blog/gone.jpg"');
+      // And it must stay SILENT. A browser bundle has no `process`, so a guard of the form
+      // `typeof process !== undefined && ...` evaluates false there and warns in production
+      // forever. When the environment cannot be determined, silence is the only safe answer —
+      // this assertion is what distinguishes the two implementations, since in Node both work.
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      globalThis.process = saved;
+      warn.mockRestore();
+    }
+  });
+
+  it('DOES warn for a raster src that is missing from the manifest', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    render(<Picture manifest={MANIFEST} src="/images/blog/typo.jpg" alt="x" sizes="100vw" />);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('passes sizes through to every source and the img', () => {
+    const html = render(
+      <Picture manifest={MANIFEST} src="/images/blog/foo.jpg" alt="A" sizes="50vw" />,
+    );
+    expect(html.match(/sizes="50vw"/g)?.length).toBe(3);
+  });
+});
