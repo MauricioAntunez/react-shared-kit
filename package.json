@@ -28,12 +28,24 @@
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./images": {
+      "source": "./src/image/index.ts",
+      "types": "./dist/image/index.d.ts",
+      "import": "./dist/image/index.js"
+    },
+    "./node": {
+      "source": "./src/image/node/index.ts",
+      "types": "./dist/image/node/index.d.ts",
+      "import": "./dist/image/node/index.js"
     }
   },
   "files": [
     "dist",
     "src",
-    "!src/**/*.test.ts"
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__fixtures__"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -49,9 +61,28 @@
   "engines": {
     "node": ">=22"
   },
+  "peerDependencies": {
+    "react": ">=19",
+    "sharp": ">=0.35",
+    "imagetools-core": ">=10"
+  },
+  "peerDependenciesMeta": {
+    "sharp": {
+      "optional": true
+    },
+    "imagetools-core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",
     "@types/node": "^26.1.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "imagetools-core": "^10.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "sharp": "^0.35.3",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   }

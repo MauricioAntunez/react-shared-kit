@@ -169,6 +169,82 @@ reports failure, so call `isValidRut` first if you need to tell "formatted" from
 
 ---
 
+## Image optimization
+
+Generation, delivery and verification for responsive images, split across three subpaths so a
+browser bundle never pulls in Node/`sharp` code:
+
+- `@uxr/react-shared-kit` (root) — `Picture`, `buildSizes`, and the manifest types. Browser-safe.
+- `@uxr/react-shared-kit/images` — `defineImageClasses`, `buildSizes`, and the types, with no
+  React import. For build scripts that need the class table but not the component.
+- `@uxr/react-shared-kit/node` — `optimizeImages`, `verifyImages`, and the ledger primitives.
+  Node-only; requires the peer deps below.
+
+`react` is a peer dependency for the root subpath. `sharp` and `imagetools-core` are peer
+dependencies too, but **optional** — install them only if you use `@uxr/react-shared-kit/node`; the
+root and `/images` subpaths never import them.
+
+```bash
+npm install @uxr/react-shared-kit sharp imagetools-core
+```
+
+Define the class ladder once, generate derivatives with a build script, then render with
+`<Picture>`:
+
+```ts
+// build-images.mjs — run over your app's existing public/** tree
+import { defineImageClasses } from '@uxr/react-shared-kit/images';
+import { optimizeImages } from '@uxr/react-shared-kit/node';
+
+const { classes, classForPath } = defineImageClasses(
+  { hero: { widths: [480, 768, 1280], masterMin: 1280 } },
+  { hero: 'hero' }, // any path under a "hero" directory uses the "hero" class
+);
+
+await optimizeImages({
+  sourceDir: 'public/images',
+  classes,
+  classForPath,
+  manifestPath: 'public/images/manifest.json',
+  ledgerPath: '.image-ledger.json',
+});
+```
+
+```tsx
+// any component
+import { Picture } from '@uxr/react-shared-kit';
+import manifest from '../public/images/manifest.json';
+
+function Hero() {
+  return (
+    <Picture
+      manifest={manifest}
+      src="/images/hero/banner.jpg"
+      alt="Product banner"
+      sizes="100vw"
+      priority
+    />
+  );
+}
+```
+
+Four rules the module never bends:
+
+- **No upscaling.** A class's width ladder is truncated per image to `w <= master intrinsic
+  width`; srcset descriptors come from the *measured* output, never the requested width.
+- **AVIF-first, unconditionally.** `<Picture>` always lists AVIF before WebP in the `<picture>`
+  source order. A larger AVIF than its WebP sibling is reported by `optimizeImages`, never dropped.
+- **The ledger is content-addressed.** Re-encode decisions key on `sha256(bytes) + params`, never
+  on file mtime — touching a file without changing its bytes costs zero re-encodes.
+- **Mobile-first.** Ladders ascend from the smallest rung, the plain `<img src>` fallback is the
+  smallest JPEG rung, and images are `loading="lazy"` unless `priority` is set.
+
+`verifyImages` re-checks an existing manifest against the source tree (stale entries, missing
+files, ladder violations) without re-encoding anything — run it in CI to catch a manifest that
+drifted from its images.
+
+---
+
 ## Consuming the TypeScript source
 
 The default entry point is compiled JavaScript plus declarations, which works in any bundler and any

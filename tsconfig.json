@@ -13,6 +13,7 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
+    "jsx": "react-jsx",
 
     /* Source is written with real `.ts` specifiers and tsc rewrites them to `.js`
        on emit. This is what makes the `source` export condition honest: a consumer
@@ -43,5 +44,5 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "dist"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "dist"]
 }
