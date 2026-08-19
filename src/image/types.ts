@@ -35,6 +35,6 @@ export type ImageManifest = Record<string, ManifestEntry>;
 
 /** One entry of a `sizes` attribute. The final entry must have no `minWidth`. */
 export interface SizeEntry {
-  minWidth?: string;
+  minWidth?: string | undefined;
   value: string;
 }

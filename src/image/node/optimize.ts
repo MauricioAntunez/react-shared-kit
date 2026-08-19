@@ -1,55 +1,72 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { cpus } from 'node:os';
-import { extname, join, relative } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import sharp from 'sharp';
 import type { ImageClasses, ImageManifest, ManifestEntry, Rung } from '../types.ts';
 import { type EncodeFormat, encodeOne } from './encode.ts';
 import { fileSha256, type Ledger, type LedgerEntry, needsEncode, paramsKey } from './ledger.ts';
+import { derivativeName, findMasters, type IgnoredFile, type MasterFile } from './scan.ts';
 
 export interface OptimizeOptions {
   sourceDir: string;
   classes: ImageClasses;
   classForPath: (path: string) => string;
-  formats?: { avif?: number; webp?: number; jpeg?: number };
+  formats?: { avif?: number; webp?: number; jpeg?: number } | undefined;
   manifestPath: string;
   ledgerPath: string;
-  concurrency?: number;
-  force?: boolean;
+  concurrency?: number | undefined;
+  force?: boolean | undefined;
+}
+
+export interface Inversion {
+  path: string;
+  width: number;
+  avifBytes: number;
+  webpBytes: number;
 }
 
 export interface OptimizeResult {
+  /** Masters found by the scan. `mastersFound === mastersEncoded + skipped` always holds. */
+  mastersFound: number;
+  /** Masters re-encoded this run. */
+  mastersEncoded: number;
+  /** Individual RUNGS encoded — not masters, hence the separate master counters above. */
   encoded: number;
+  /** Masters skipped because the ledger proved their derivatives current. */
   skipped: number;
   bytesWritten: number;
   manifest: ImageManifest;
   truncated: Array<{ path: string; requested: number[]; emitted: number[] }>;
-  inversions: Array<{ path: string; width: number; avifBytes: number; webpBytes: number }>;
+  /**
+   * Rungs whose AVIF came out no smaller than its WebP sibling.
+   *
+   * Replayed from the ledger for skipped masters so this stays complete on incremental runs. It
+   * would otherwise empty out after the first build, and a CI gate on it would pass vacuously —
+   * green forever on any warm cache while oversized AVIFs kept shipping first.
+   */
+  inversions: Inversion[];
   undersized: Array<{ path: string; intrinsic: number; masterMin: number }>;
+  /**
+   * Image files seen but not treated as masters — an AVIF used as a source, an animated GIF, an
+   * unsupported format. Reported so that "not optimized" is never indistinguishable from
+   * "not present": the manifest-driven verifier cannot see these, because they never become
+   * masters.
+   */
+  ignored: IgnoredFile[];
+  /**
+   * Set when the ledger could not be used and incrementality was reset. Distinguishes a cold cache
+   * from a corrupt one — otherwise a ledger being clobbered every run looks exactly like a normal
+   * first build, forever.
+   */
+  ledgerReset?: 'missing' | 'corrupt';
 }
 
 type Formats = Required<NonNullable<OptimizeOptions['formats']>>;
 
-const MASTER_RE = /\.(jpg|jpeg|png|webp)$/i;
-/**
- * A candidate that LOOKS like one of our outputs: `<stem>-<width>.<ext>`.
- *
- * Shape alone is NOT enough to classify it — see `isOwnDerivative`. Real content in these repos
- * matches this pattern while being a genuine master: `form-1583.jpg` (a US tax form number),
- * `iso-27001-280.avif` (a standard number), and uxr-react's `…-content-1.webp` series.
- */
-const DERIVATIVE_SHAPE_RE = /^(.*)-\d+\.(avif|webp|jpg)$/i;
-const MASTER_EXTS = ['.jpg', '.jpeg', '.png', '.webp'] as const;
 const EXT_BY_FORMAT: Record<EncodeFormat, string> = { avif: 'avif', webp: 'webp', jpeg: 'jpg' };
 const DEFAULT_QUALITY: Formats = { avif: 55, webp: 72, jpeg: 80 };
 const FORMAT_ORDER = ['avif', 'webp', 'jpeg'] as const;
-
-interface MasterFile {
-  /** Absolute filesystem path. */
-  abs: string;
-  /** Public-style path, `sourceDir`-relative with a leading `/`. */
-  publicPath: string;
-}
 
 interface RungPlan {
   master: MasterFile;
@@ -59,51 +76,13 @@ interface RungPlan {
   widths: number[];
 }
 
-async function walk(dir: string, root: string, out: MasterFile[]): Promise<void> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const siblings = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
-  for (const entry of entries) {
-    const abs = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      await walk(abs, root, out);
-      continue;
-    }
-    if (!entry.isFile() || !MASTER_RE.test(entry.name) || isOwnDerivative(entry.name, siblings)) {
-      continue;
-    }
-    const rel = relative(root, abs).split('\\').join('/');
-    out.push({ abs, publicPath: `/${rel}` });
-  }
-}
-
-/**
- * Is this file one of OUR emitted derivatives, rather than a master that merely looks like one?
- *
- * The name shape is ambiguous, so it is resolved by evidence: a derivative only exists because a
- * master was encoded, so the master must be sitting beside it. No sibling master with that stem
- * means the file is a master in its own right.
- *
- * Getting this wrong is SILENT — a misclassified master is skipped, never optimized, never in the
- * manifest, and nothing errors. Verified against real files: web-usa's `guides/form-1583.jpg`,
- * boufin's `iso-27001-280.avif`, and uxr-react's `…-content-1.webp` series would all have been
- * dropped by a shape-only test.
- */
-function isOwnDerivative(name: string, siblings: Set<string>): boolean {
-  const match = DERIVATIVE_SHAPE_RE.exec(name);
-  const stem = match?.[1];
-  if (stem === undefined) return false;
-  return MASTER_EXTS.some(
-    (ext) => siblings.has(stem + ext) || siblings.has(stem + ext.toUpperCase()),
-  );
-}
-
-function stemOf(master: MasterFile): string {
-  const file = master.publicPath.slice(master.publicPath.lastIndexOf('/') + 1);
-  return file.slice(0, file.length - extname(file).length);
+/** The master's full filename INCLUDING extension — see `derivativeName` for why. */
+function baseOf(master: MasterFile): string {
+  return basename(master.publicPath);
 }
 
 function outDirOf(master: MasterFile): string {
-  return master.abs.slice(0, master.abs.lastIndexOf('/'));
+  return dirname(master.abs);
 }
 
 function planRung(
@@ -135,19 +114,19 @@ function planRung(
   return { master, className, intrinsicWidth, intrinsicHeight, widths };
 }
 
-/** Encode one rung's three formats, writing files beside the master. Reports AVIF inversions. */
 interface EncodedRung {
   rung: Rung;
   bytesWritten: number;
+  inversion?: Inversion;
 }
 
+/** Encode one rung's three formats, writing the files beside the master. */
 async function encodeRung(
   master: MasterFile,
   requestedWidth: number,
   formats: Formats,
-  result: OptimizeResult,
 ): Promise<EncodedRung> {
-  const stem = stemOf(master);
+  const base = baseOf(master);
   const outDir = outDirOf(master);
   const files: Record<EncodeFormat, { file: string; bytes: number }> = {
     avif: { file: '', bytes: 0 },
@@ -159,45 +138,42 @@ async function encodeRung(
   for (const format of FORMAT_ORDER) {
     const encoded = await encodeOne(master.abs, requestedWidth, format, formats[format]);
     measuredWidth = encoded.width;
-    const file = `${stem}-${encoded.width}.${EXT_BY_FORMAT[format]}`;
+    const file = derivativeName(base, encoded.width, EXT_BY_FORMAT[format]);
     await writeFile(join(outDir, file), encoded.data);
     files[format] = { file, bytes: encoded.data.length };
   }
 
+  const rung: Rung = {
+    w: measuredWidth,
+    files: { avif: files.avif.file, webp: files.webp.file, jpeg: files.jpeg.file },
+  };
+  const bytesWritten = files.avif.bytes + files.webp.bytes + files.jpeg.bytes;
+
+  // AVIF is emitted and served first regardless. An inversion means the SOURCE is an already-lossy
+  // re-encode, not that the chain should reorder — so it is reported, never acted on.
   if (files.avif.bytes >= files.webp.bytes) {
-    result.inversions.push({
+    const inversion: Inversion = {
       path: master.publicPath,
       width: measuredWidth,
       avifBytes: files.avif.bytes,
       webpBytes: files.webp.bytes,
-    });
+    };
+    return { rung, bytesWritten, inversion };
   }
-
-  return {
-    rung: {
-      w: measuredWidth,
-      files: { avif: files.avif.file, webp: files.webp.file, jpeg: files.jpeg.file },
-    },
-    bytesWritten: files.avif.bytes + files.webp.bytes + files.jpeg.bytes,
-  };
+  return { rung, bytesWritten };
 }
 
 function rungOutputFiles(rung: Rung): string[] {
   return [rung.files.avif, rung.files.webp, rung.files.jpeg];
 }
 
-function rungFileNames(stem: string, w: number): Rung['files'] {
-  return { avif: `${stem}-${w}.avif`, webp: `${stem}-${w}.webp`, jpeg: `${stem}-${w}.jpg` };
-}
-
 /**
  * Rungs for a SKIPPED master, without re-encoding.
  *
- * D10 mechanism 3 says a descriptor is a claim about a file and must be generated FROM the file.
- * Deriving it from the requested ladder instead would reintroduce the lying-descriptor bug on the
- * incremental path — which is the common path, so the weaker version would be wrong almost every
- * build. The ledger therefore persists the widths that were actually measured, and this replays
- * them.
+ * A descriptor is a claim about a file and must be generated FROM the file. Deriving it from the
+ * requested ladder instead reintroduces the lying-descriptor bug on the incremental path — which
+ * is the common path, so the weaker version would be wrong on nearly every build. The ledger
+ * persists the widths actually measured; this replays them.
  *
  * The disk fallback covers a ledger written before `rungs` existed: measure the emitted files
  * rather than trust the ladder. Header-only metadata reads, no decode, so a skip stays cheap.
@@ -207,15 +183,25 @@ async function rungsForSkip(
   widths: number[],
   entry: LedgerEntry | undefined,
 ): Promise<Rung[]> {
-  const stem = stemOf(master);
   if (entry?.rungs && entry.rungs.length > 0) return entry.rungs;
 
+  const base = baseOf(master);
   const outDir = outDirOf(master);
   const measured: Rung[] = [];
   for (const w of widths) {
-    const files = rungFileNames(stem, w);
-    const { width } = await sharp(join(outDir, files.jpeg)).metadata();
-    measured.push({ w: width ?? w, files });
+    const files = {
+      avif: derivativeName(base, w, 'avif'),
+      webp: derivativeName(base, w, 'webp'),
+      jpeg: derivativeName(base, w, 'jpg'),
+    };
+    const jpegPath = join(outDir, files.jpeg);
+    const { width } = await sharp(jpegPath).metadata();
+    // Guessing the requested width here would be the lying descriptor this module exists to
+    // prevent, so an unmeasurable derivative is an error rather than an assumption.
+    if (width === undefined) {
+      throw new Error(`optimizeImages: cannot measure ${jpegPath} to replay a skipped master`);
+    }
+    measured.push({ w: width, files });
   }
   return measured;
 }
@@ -232,11 +218,31 @@ async function runPool<T>(items: T[], concurrency: number, fn: (item: T) => Prom
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
 }
 
-async function loadJson<T>(path: string, fallback: T): Promise<T> {
+/**
+ * Load the ledger, distinguishing "absent" from "unusable".
+ *
+ * A ledger is a cache, so failing to read one must never fail the build — but it must not be
+ * silent either. A parseable value of the wrong SHAPE is the dangerous case: an array accepts
+ * string property assignment, then `JSON.stringify` drops every one of them, so the file rewrites
+ * as `[]` and incrementality is dead permanently while every build still looks normal.
+ */
+async function loadLedger(
+  path: string,
+): Promise<{ ledger: Ledger; reset?: 'missing' | 'corrupt' }> {
+  let raw: string;
   try {
-    return JSON.parse(await readFile(path, 'utf8')) as T;
+    raw = await readFile(path, 'utf8');
   } catch {
-    return fallback;
+    return { ledger: {}, reset: 'missing' };
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { ledger: {}, reset: 'corrupt' };
+    }
+    return { ledger: parsed as Ledger };
+  } catch {
+    return { ledger: {}, reset: 'corrupt' };
   }
 }
 
@@ -261,19 +267,24 @@ async function processMaster(
   if (!needsEncode({ entry, sha256, params, outputsExist })) {
     result.skipped++;
     result.manifest[key] = manifestEntry(plan, await rungsForSkip(master, widths, entry));
+    if (entry?.inversions) result.inversions.push(...entry.inversions);
     return;
   }
 
   const rungs: Rung[] = [];
+  const inversions: Inversion[] = [];
   for (const w of widths) {
-    const { rung, bytesWritten } = await encodeRung(master, w, formats, result);
-    rungs.push(rung);
+    const encoded = await encodeRung(master, w, formats);
+    rungs.push(encoded.rung);
+    if (encoded.inversion) inversions.push(encoded.inversion);
     result.encoded++;
-    result.bytesWritten += bytesWritten;
+    result.bytesWritten += encoded.bytesWritten;
   }
 
+  result.mastersEncoded++;
+  result.inversions.push(...inversions);
   result.manifest[key] = manifestEntry(plan, rungs);
-  ledger[key] = { sha256, params, outputs: rungs.flatMap(rungOutputFiles), rungs };
+  ledger[key] = { sha256, params, outputs: rungs.flatMap(rungOutputFiles), rungs, inversions };
 }
 
 function sortManifest(manifest: ImageManifest): ImageManifest {
@@ -302,22 +313,18 @@ async function orientedSize(abs: string): Promise<{ width: number; height: numbe
   return (meta.orientation ?? 1) >= 5 ? { width: h, height: w } : { width: w, height: h };
 }
 
-async function buildPlans(
-  sourceDir: string,
-  classes: ImageClasses,
-  classForPath: (path: string) => string,
-  result: OptimizeResult,
-): Promise<RungPlan[]> {
-  const masters: MasterFile[] = [];
-  await walk(sourceDir, sourceDir, masters);
-  const plans: RungPlan[] = [];
-  for (const master of masters) {
-    const { width, height } = await orientedSize(master.abs);
-    plans.push(planRung(master, classes, classForPath, width, height, result));
-  }
-  return plans;
-}
-
+/**
+ * Optimize every master under `options.sourceDir`.
+ *
+ * Scan failures PROPAGATE. An earlier version wrapped the scan in a blanket `catch` that returned
+ * an empty but successful-looking result, so one corrupt file, one permission error or one
+ * unmapped directory silently produced `encoded: 0, manifest: {}` — and, because the write was
+ * skipped, left the PREVIOUS manifest on disk for `verifyImages` to bless. That is the "the output
+ * exists, so we are done" failure this module exists to eliminate, reconstituted one layer up.
+ *
+ * A missing `sourceDir` is the single case treated as data rather than error: it returns an empty
+ * result and writes NOTHING, so a misconfigured path cannot clobber a good manifest with `{}`.
+ */
 export async function optimizeImages(options: OptimizeOptions): Promise<OptimizeResult> {
   const formats: Formats = {
     avif: options.formats?.avif ?? DEFAULT_QUALITY.avif,
@@ -325,6 +332,8 @@ export async function optimizeImages(options: OptimizeOptions): Promise<Optimize
     jpeg: options.formats?.jpeg ?? DEFAULT_QUALITY.jpeg,
   };
   const result: OptimizeResult = {
+    mastersFound: 0,
+    mastersEncoded: 0,
     encoded: 0,
     skipped: 0,
     bytesWritten: 0,
@@ -332,24 +341,36 @@ export async function optimizeImages(options: OptimizeOptions): Promise<Optimize
     truncated: [],
     inversions: [],
     undersized: [],
+    ignored: [],
   };
 
-  let plans: RungPlan[];
-  try {
-    plans = await buildPlans(options.sourceDir, options.classes, options.classForPath, result);
-  } catch {
-    return result;
+  if (!existsSync(options.sourceDir)) return result;
+
+  const { masters, ignored } = await findMasters(options.sourceDir);
+  result.ignored = ignored;
+  result.mastersFound = masters.length;
+  if (masters.length === 0) return result;
+
+  const plans: RungPlan[] = [];
+  for (const master of masters) {
+    const { width, height } = await orientedSize(master.abs);
+    plans.push(planRung(master, options.classes, options.classForPath, width, height, result));
   }
-  if (plans.length === 0) return result;
 
   const concurrency = options.concurrency ?? Math.max(2, cpus().length);
-  const ledger: Ledger = options.force ? {} : await loadJson<Ledger>(options.ledgerPath, {});
+  let ledger: Ledger = {};
+  if (!options.force) {
+    const loaded = await loadLedger(options.ledgerPath);
+    ledger = loaded.ledger;
+    if (loaded.reset) result.ledgerReset = loaded.reset;
+  }
 
   await runPool(plans, concurrency, (plan) => processMaster(plan, formats, ledger, result));
 
   result.manifest = sortManifest(result.manifest);
-  await mkdir(join(options.manifestPath, '..'), { recursive: true });
+  await mkdir(dirname(options.manifestPath), { recursive: true });
   await writeFile(options.manifestPath, JSON.stringify(result.manifest, null, 2));
+  await mkdir(dirname(options.ledgerPath), { recursive: true });
   await writeFile(options.ledgerPath, JSON.stringify(ledger, null, 2));
 
   return result;

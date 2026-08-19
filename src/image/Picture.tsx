@@ -1,5 +1,8 @@
 import type { ImageManifest, Rung } from './types.ts';
 
+/** Vector sources pass through untouched: SVG scales from one file, so it is never rasterised. */
+const VECTOR_RE = /\.svgz?(\?|#|$)/i;
+
 export interface PictureProps {
   /** The manifest emitted by `optimizeImages`. */
   manifest: ImageManifest;
@@ -15,8 +18,8 @@ export interface PictureProps {
    * `true` for the LCP image. Flips to `loading="eager"` + `fetchpriority="high"`; lazy-loading a
    * hero delays its request until layout, which is the wrong trade on a phone.
    */
-  priority?: boolean;
-  className?: string;
+  priority?: boolean | undefined;
+  className?: string | undefined;
 }
 
 function dirOf(path: string): string {
@@ -50,9 +53,23 @@ export function Picture({ manifest, src, alt, sizes, priority = false, className
    */
   const fetchPriority = priority ? 'high' : 'auto';
 
-  // Unknown src: degrade rather than crash. A missing derivative must never blank a page —
-  // `verifyImages` is what makes the miss loud, at build time.
+  // Unknown src: degrade rather than crash — a missing derivative must never blank a page.
+  //
+  // But the degrade is genuinely lossy: no width/height, so the layout shift this component
+  // exists to prevent comes back, and the unoptimized master ships. `verifyImages` catches a
+  // master missing from the manifest, but it CANNOT see a call site naming a path that does not
+  // exist at all (a typo, or a wrongly-rooted src) — it iterates the manifest, not the callers.
+  // Hence the dev-only warning: it is the only signal available for that case.
   if (!entry || entry.rungs.length === 0) {
+    // A vector source has no manifest entry BY DESIGN: SVG scales to any size from one file, so
+    // rasterising it into a width ladder would be a downgrade, and optimizeImages never treats it
+    // as a master. Warning about it would cry wolf on every correct usage.
+    if (!VECTOR_RE.test(src) && process.env.NODE_ENV !== 'production') {
+      console.warn(
+        `[react-shared-kit] Picture: no manifest entry for "${src}" — serving the unoptimized ` +
+          `master with no intrinsic dimensions. Check the path, or re-run optimizeImages.`,
+      );
+    }
     return (
       <img
         src={src}

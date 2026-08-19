@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -51,9 +51,9 @@ describe('optimizeImages', () => {
   it('encodes every rung on the first run', async () => {
     const r = await optimizeImages(opts);
     expect(r.encoded).toBeGreaterThan(0);
-    expect(existsSync(join(dir, 'images', 'blog', 'foo-480.avif'))).toBe(true);
-    expect(existsSync(join(dir, 'images', 'blog', 'foo-480.webp'))).toBe(true);
-    expect(existsSync(join(dir, 'images', 'blog', 'foo-480.jpg'))).toBe(true);
+    expect(existsSync(join(dir, 'images', 'blog', 'foo.jpg-480.avif'))).toBe(true);
+    expect(existsSync(join(dir, 'images', 'blog', 'foo.jpg-480.webp'))).toBe(true);
+    expect(existsSync(join(dir, 'images', 'blog', 'foo.jpg-480.jpg'))).toBe(true);
   });
 
   it('does ZERO work on an unchanged second run', async () => {
@@ -87,10 +87,10 @@ describe('optimizeImages', () => {
 
   it('regenerates a deleted derivative without touching the others', async () => {
     await optimizeImages(opts);
-    await rm(join(dir, 'images', 'blog', 'foo-480.webp'));
+    await rm(join(dir, 'images', 'blog', 'foo.jpg-480.webp'));
     const second = await optimizeImages(opts);
     expect(second.encoded).toBeGreaterThan(0);
-    expect(existsSync(join(dir, 'images', 'blog', 'foo-480.webp'))).toBe(true);
+    expect(existsSync(join(dir, 'images', 'blog', 'foo.jpg-480.webp'))).toBe(true);
   });
 
   it('NEVER upscales: rungs above the master are truncated away entirely (D10)', async () => {
@@ -98,8 +98,8 @@ describe('optimizeImages', () => {
     await rm(join(blog, 'foo.jpg'));
     await makeMaster(join(blog, 'small.jpg'), 600, 400);
     const r = await optimizeImages(opts);
-    expect(existsSync(join(blog, 'small-768.webp'))).toBe(false);
-    expect(existsSync(join(blog, 'small-480.webp'))).toBe(true);
+    expect(existsSync(join(blog, 'small.jpg-768.webp'))).toBe(false);
+    expect(existsSync(join(blog, 'small.jpg-480.webp'))).toBe(true);
     expect(r.truncated.length).toBe(1);
   });
 
@@ -182,10 +182,116 @@ describe('optimizeImages', () => {
     expect(Object.keys(second.manifest)).toEqual(['/images/blog/foo.jpg']);
   });
 
-  it('leaves the manifest untouched when the scan finds nothing', async () => {
+  it('gives two masters differing only by extension DISTINCT derivatives', async () => {
+    const blog = join(dir, 'images', 'blog');
+    // hero.jpg + hero.webp co-exist in uxr-react and web-mexico today. Naming derivatives from the
+    // stem alone made them collide and silently overwrite each other, so Picture rendered one
+    // master's pixels under the other's manifest entry.
+    await rm(join(blog, 'foo.jpg'));
+    await makeMaster(join(blog, 'hero.jpg'), 1000, 600, 10);
+    await sharp({ create: { width: 1000, height: 600, channels: 3, background: '#ff0000' } })
+      .webp()
+      .toFile(join(blog, 'hero.webp'));
+    const r = await optimizeImages(opts);
+
+    const a = r.manifest['/images/blog/hero.jpg'];
+    const b = r.manifest['/images/blog/hero.webp'];
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    const aFiles = (a?.rungs ?? []).flatMap((x) => Object.values(x.files));
+    const bFiles = (b?.rungs ?? []).flatMap((x) => Object.values(x.files));
+    expect(aFiles.some((f) => bFiles.includes(f))).toBe(false);
+    for (const f of [...aFiles, ...bFiles]) {
+      expect(existsSync(join(blog, f))).toBe(true);
+    }
+  });
+
+  it('keeps a genuine master that sits beside a same-stem sibling (form.jpg + form-1583.jpg)', async () => {
+    const blog = join(dir, 'images', 'blog');
+    await rm(join(blog, 'foo.jpg'));
+    // The sibling test used to be symmetric: it proved "a master with this stem exists", not "this
+    // file came from that master", so form-1583.jpg was silently dropped whenever form.jpg existed.
+    await makeMaster(join(blog, 'form.jpg'), 1000, 600);
+    await makeMaster(join(blog, 'form-1583.jpg'), 1000, 600, 90);
+    const r = await optimizeImages(opts);
+    expect(r.manifest['/images/blog/form.jpg']).toBeDefined();
+    expect(r.manifest['/images/blog/form-1583.jpg']).toBeDefined();
+    expect(r.mastersFound).toBe(2);
+  });
+
+  it('PROPAGATES a scan failure instead of reporting an empty success', async () => {
+    const blog = join(dir, 'images', 'blog');
+    // A zero-byte file is a half-uploaded master. Swallowing this returned encoded:0/manifest:{}
+    // that read as "nothing to do", skipped the manifest write, and left a stale manifest that
+    // verifyImages then blessed as ok.
+    await writeFile(join(blog, 'broken.jpg'), '');
+    await expect(optimizeImages(opts)).rejects.toThrow();
+  });
+
+  it('REPORTS an AVIF used as a source instead of scanning past it', async () => {
+    const blog = join(dir, 'images', 'blog');
+    // boufin ships iso-27001-140.avif / -280.avif with no sibling master. AVIF is an output
+    // format so it is not accepted as a master — but being skipped must be visible, since the
+    // manifest-driven verifier can never see a file that never became a master.
+    await sharp({ create: { width: 800, height: 600, channels: 3, background: '#0a0' } })
+      .avif()
+      .toFile(join(blog, 'standalone.avif'));
+    const r = await optimizeImages(opts);
+    const hit = r.ignored.find((i) => i.publicPath === '/images/blog/standalone.avif');
+    expect(hit?.reason).toBe('output-format-as-source');
+  });
+
+  it('does NOT report our own AVIF derivatives as ignored', async () => {
+    const first = await optimizeImages(opts);
+    expect(first.ignored).toEqual([]);
+    const second = await optimizeImages(opts);
+    // The emitted .avif rungs sit beside their master; classifying them as ignored would flood
+    // the report with our own output on every incremental run.
+    expect(second.ignored).toEqual([]);
+  });
+
+  it('does not write the manifest when sourceDir does not exist', async () => {
     await writeFile(opts.manifestPath, '{"pre":"existing"}');
-    const empty = { ...opts, sourceDir: join(dir, 'nowhere') };
-    await optimizeImages(empty).catch(() => undefined);
+    await optimizeImages({ ...opts, sourceDir: join(dir, 'nowhere') });
     expect(await readFile(opts.manifestPath, 'utf8')).toBe('{"pre":"existing"}');
+  });
+
+  it('does not write the manifest when a REAL but EMPTY directory is scanned', async () => {
+    // The original test pointed at a NONEXISTENT directory, so readdir threw and the throw was
+    // swallowed — the plans.length === 0 guard was never reached and deleting it kept the suite
+    // green. This exercises the guard itself: an existing, empty tree must not clobber a manifest.
+    const empty = join(dir, 'empty');
+    await mkdir(empty, { recursive: true });
+    await writeFile(opts.manifestPath, '{"pre":"existing"}');
+    const r = await optimizeImages({ ...opts, sourceDir: empty });
+    expect(r.mastersFound).toBe(0);
+    expect(await readFile(opts.manifestPath, 'utf8')).toBe('{"pre":"existing"}');
+  });
+
+  it('reports inversions on a SKIPPED run, not only on the encode run', async () => {
+    const first = await optimizeImages(opts);
+    const second = await optimizeImages(opts);
+    expect(second.encoded).toBe(0);
+    // Otherwise `if (res.inversions.length) fail()` is green on every warm-cache build while the
+    // oversized AVIF keeps shipping first.
+    expect(second.inversions).toEqual(first.inversions);
+  });
+
+  it('flags a corrupt ledger instead of silently resetting incrementality', async () => {
+    await optimizeImages(opts);
+    // An array parses fine, accepts string property assignment, then JSON.stringify drops every
+    // one — so the file rewrites as [] and incrementality is dead permanently, silently.
+    await writeFile(opts.ledgerPath, '[]');
+    const r = await optimizeImages(opts);
+    expect(r.ledgerReset).toBe('corrupt');
+    expect(r.encoded).toBeGreaterThan(0);
+  });
+
+  it('keeps master counts reconcilable: mastersFound === mastersEncoded + skipped', async () => {
+    const first = await optimizeImages(opts);
+    expect(first.mastersFound).toBe(first.mastersEncoded + first.skipped);
+    const second = await optimizeImages(opts);
+    expect(second.mastersFound).toBe(second.mastersEncoded + second.skipped);
+    expect(second.skipped).toBe(second.mastersFound);
   });
 });

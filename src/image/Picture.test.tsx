@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Picture } from './Picture.tsx';
 import type { ImageManifest } from './types.ts';
 
@@ -77,6 +77,25 @@ describe('Picture', () => {
     expect(html).not.toContain('<picture');
     expect(html).toContain('src="/images/blog/missing.jpg"');
     expect(html).toContain('alt="Gone"');
+  });
+
+  it('passes an SVG through as a plain img WITHOUT warning — vectors are not rasterised', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const html = render(
+      <Picture manifest={MANIFEST} src="/logos/mark.svg" alt="Logo" sizes="100vw" />,
+    );
+    expect(html).toContain('src="/logos/mark.svg"');
+    expect(html).not.toContain('<picture');
+    // An SVG has no manifest entry by design; warning here would fire on every correct usage.
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('DOES warn for a raster src that is missing from the manifest', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    render(<Picture manifest={MANIFEST} src="/images/blog/typo.jpg" alt="x" sizes="100vw" />);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it('passes sizes through to every source and the img', () => {

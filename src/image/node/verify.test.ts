@@ -22,7 +22,10 @@ function manifest(rungW: number): ImageManifest {
       h: 600,
       class: 'content',
       rungs: [
-        { w: rungW, files: { avif: 'foo-480.avif', webp: 'foo-480.webp', jpeg: 'foo-480.jpg' } },
+        {
+          w: rungW,
+          files: { avif: 'foo.jpg-480.avif', webp: 'foo.jpg-480.webp', jpeg: 'foo.jpg-480.jpg' },
+        },
       ],
     },
   };
@@ -33,9 +36,9 @@ beforeEach(async () => {
   const blog = join(dir, 'images', 'blog');
   await mkdir(blog, { recursive: true });
   await write(join(blog, 'foo.jpg'), 1000, 600);
-  await write(join(blog, 'foo-480.jpg'), 480, 288);
-  await write(join(blog, 'foo-480.webp'), 480, 288);
-  await write(join(blog, 'foo-480.avif'), 480, 288);
+  await write(join(blog, 'foo.jpg-480.jpg'), 480, 288);
+  await write(join(blog, 'foo.jpg-480.webp'), 480, 288);
+  await write(join(blog, 'foo.jpg-480.avif'), 480, 288);
 });
 
 afterEach(async () => {
@@ -50,7 +53,7 @@ describe('verifyImages', () => {
   });
 
   it('fails on a missing derivative', async () => {
-    await rm(join(dir, 'images', 'blog', 'foo-480.webp'));
+    await rm(join(dir, 'images', 'blog', 'foo.jpg-480.webp'));
     const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.kind === 'missing-file')).toBe(true);
@@ -67,6 +70,26 @@ describe('verifyImages', () => {
     const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
     expect(r.ok).toBe(false);
     expect(r.issues.some((i) => i.kind === 'upscale')).toBe(true);
+  });
+
+  it('fails on an EXTRA derivative the manifest does not declare (count-mismatch)', async () => {
+    // No test previously exercised this kind at all: disabling the comparison entirely left the
+    // suite green, so the check was shipped unprotected.
+    await write(join(dir, 'images', 'blog', 'foo.jpg-999.jpg'), 999, 600);
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    expect(r.ok).toBe(false);
+    expect(r.issues.some((i) => i.kind === 'count-mismatch')).toBe(true);
+  });
+
+  it('fails when a master on disk is ABSENT from the manifest', async () => {
+    // verifyImages iterates the manifest, so every way a master can go missing FROM the manifest
+    // was invisible to it — a stale manifest, a misclassified file, or an image added since the
+    // last successful run. Each ships an unoptimized master with no width/height, silently.
+    await write(join(dir, 'images', 'blog', 'newcomer.jpg'), 1000, 600);
+    const r = await verifyImages({ manifest: manifest(480), classes: CLASSES, sourceDir: dir });
+    expect(r.ok).toBe(false);
+    const issue = r.issues.find((i) => i.kind === 'master-not-in-manifest');
+    expect(issue?.path).toBe('/images/blog/newcomer.jpg');
   });
 
   it('fails on a master below its class masterMin', async () => {
