@@ -171,7 +171,7 @@ reports failure, so call `isValidRut` first if you need to tell "formatted" from
 
 ## Image optimization
 
-Generation, delivery and verification for responsive images, split across three subpaths so a
+Generation, delivery and verification for responsive images, split across four subpaths so a
 browser bundle never pulls in Node/`sharp` code:
 
 - `@uxr/react-shared-kit` (root) — `Picture`, `buildSizes`, and the manifest types. Browser-safe.
@@ -179,10 +179,31 @@ browser bundle never pulls in Node/`sharp` code:
   React import. For build scripts that need the class table but not the component.
 - `@uxr/react-shared-kit/node` — `optimizeImages`, `verifyImages`, and the ledger primitives.
   Node-only; requires the peer deps below.
+- `@uxr/react-shared-kit/check` — build/deploy-chain gates: `intrinsicSize`/`sameAspect` and the
+  `object-fit` source of truth (`isDistortingFit`), `verifyHtmlImages` (built `<img>` tags carry
+  width/height and an honest ratio or a non-distorting `object-fit`), `verifyImageTree`
+  (structural manifest-vs-disk verify — paths, ladders, orphans, master hashes), `scanMetadataLeaks`
+  (EXIF/XMP/IPTC presence, without decoding), and `isSameEntryModule`/`makeEntryPointCheck` (a
+  symlink-safe `require.main === module` guard for script entry points). Sharp-free by
+  construction — never imports sharp or imagetools-core — so these gates run with zero native
+  binaries on the deploy chain. A gate script:
+
+  ```ts
+  import { verifyImageTree, makeEntryPointCheck } from '@uxr/react-shared-kit/check';
+
+  const isEntryPoint = makeEntryPointCheck('verify-images');
+  if (isEntryPoint(process.argv[1], import.meta.url)) {
+    const result = verifyImageTree({ manifest, outputDir: 'public', mastersDir: 'assets' });
+    if (!result.ok) {
+      console.error(result.issues);
+      process.exit(1);
+    }
+  }
+  ```
 
 `react` is a peer dependency for the root subpath. `sharp` and `imagetools-core` are peer
 dependencies too, but **optional** — install them only if you use `@uxr/react-shared-kit/node`; the
-root and `/images` subpaths never import them.
+root, `/images`, and `/check` subpaths never import them.
 
 ```bash
 npm install @uxr/react-shared-kit sharp imagetools-core

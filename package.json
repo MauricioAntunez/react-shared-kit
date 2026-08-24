@@ -38,6 +38,11 @@
       "source": "./src/image/node/index.ts",
       "types": "./dist/image/node/index.d.ts",
       "import": "./dist/image/node/index.js"
+    },
+    "./check": {
+      "source": "./src/image/check/index.ts",
+      "types": "./dist/image/check/index.d.ts",
+      "import": "./dist/image/check/index.js"
     }
   },
   "files": [
