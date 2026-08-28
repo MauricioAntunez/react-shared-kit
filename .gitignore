@@ -5,6 +5,9 @@ dist
 # Local Claude Code settings (machine-specific, not for the public repo)
 .claude/
 
+# Local Qwen Code state (machine-specific, not for the public repo)
+.qwen/
+
 # Internal planning docs — kept local, not part of the public repo
 docs/
 
