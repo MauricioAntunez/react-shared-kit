@@ -1,7 +1,8 @@
 import { readdir, stat } from 'node:fs/promises';
 import { dirname, join, parse } from 'node:path';
 import type { ImageClasses, ImageManifest, ManifestEntry, Rung } from '../types.ts';
-import { findMasters, type IgnoredFile, orientedSize } from './scan.ts';
+import { orientedSize, reasonFor } from './scan.ts';
+import { derivativePatternFor, findMasters, type IgnoredFile } from './scanfs.ts';
 
 export type VerifyIssueKind =
   | 'missing-file'
@@ -32,16 +33,6 @@ export interface VerifyOptions {
   manifest: ImageManifest;
   classes: ImageClasses;
   sourceDir: string;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** Matches this master's own derivatives only — `<filename>-<digits>.<ext>`, where <filename>
- * INCLUDES the source extension — so `hero.jpg` and `hero.webp` never count each other's files. */
-function derivativePatternFor(basename: string): RegExp {
-  return new RegExp(`^${escapeRegExp(basename)}-\\d+\\.(avif|webp|jpe?g)$`, 'i');
 }
 
 /**
@@ -355,7 +346,7 @@ async function checkMastersInManifest(
   manifest: ImageManifest,
   issues: VerifyIssue[],
 ): Promise<IgnoredFile[]> {
-  const { masters, ignored } = await findMasters(sourceDir);
+  const { masters, ignored } = await findMasters(sourceDir, undefined, reasonFor);
   for (const master of masters) {
     if (manifest[master.publicPath] === undefined) {
       issues.push({

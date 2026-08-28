@@ -9,6 +9,6 @@ export type { OptimizeOptions, OptimizeResult } from './optimize.ts';
 export { optimizeImages } from './optimize.ts';
 // Reachable from OptimizeResult, so a consumer must be able to NAME them. The exports map is
 // closed, leaving no deep-path escape if these are omitted.
-export type { IgnoredFile, MasterFile, ScanResult } from './scan.ts';
+export type { IgnoredFile, MasterFile, ScanResult } from './scanfs.ts';
 export type { VerifyIssue, VerifyIssueKind, VerifyOptions, VerifyResult } from './verify.ts';
 export { verifyImages } from './verify.ts';

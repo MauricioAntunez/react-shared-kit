@@ -6,13 +6,8 @@ import sharp from 'sharp';
 import type { ImageClasses, ImageManifest, Inversion, ManifestEntry, Rung } from '../types.ts';
 import { type EncodeFormat, encodeOne } from './encode.ts';
 import { fileSha256, type Ledger, type LedgerEntry, needsEncode, paramsKey } from './ledger.ts';
-import {
-  derivativeName,
-  findMasters,
-  type IgnoredFile,
-  type MasterFile,
-  orientedSize,
-} from './scan.ts';
+import { orientedSize, reasonFor } from './scan.ts';
+import { derivativeName, findMasters, type IgnoredFile, type MasterFile } from './scanfs.ts';
 
 export interface OptimizeOptions {
   sourceDir: string;
@@ -366,7 +361,7 @@ export async function optimizeImages(options: OptimizeOptions): Promise<Optimize
     throw new Error(`optimizeImages: sourceDir is not a directory: ${options.sourceDir}`);
   }
 
-  const { masters, ignored } = await findMasters(options.sourceDir);
+  const { masters, ignored } = await findMasters(options.sourceDir, undefined, reasonFor);
   result.ignored = ignored;
   result.mastersFound = masters.length;
   if (masters.length === 0) {
