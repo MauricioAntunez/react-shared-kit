@@ -301,14 +301,12 @@ describe('verifyFontChain', () => {
     expect(problem?.chain).toEqual([missing]);
   });
 
-  it('propagates a resolver-contract violation instead of misreporting it as unreadable-stylesheet', () => {
-    // Round 2 review finding: a `resolveImport` that violates its declared `string | undefined`
-    // contract (returns some other value, e.g. a plain object) makes the internal `readFileSync`
-    // throw Node's own `TypeError [ERR_INVALID_ARG_TYPE]`. That error ALSO carries a string
-    // `.code`, so the naive fs-error predicate misreported it as `unreadable-stylesheet` — the
-    // exact "a control-flow catastrophe must never look like a missing file" failure this
-    // discriminator exists to prevent, just triggered by a caller bug instead of a stack overflow.
-    // It must propagate as an uncaught error instead.
+  it('propagates a resolver-contract violation ({notAPath:true}) instead of misreporting it as unreadable-stylesheet', () => {
+    // Round 4 review redesign: a `resolveImport` that violates its declared `string | undefined`
+    // contract now throws from OUR OWN `assertResolverReturn` boundary check, before the bad
+    // value ever reaches `readFileSync` — not from Node's internal argument validation. Earlier
+    // rounds tried to classify the error AFTER readFileSync threw it (by .code, by prefix, by a
+    // narrow allowlist) and each attempt failed a different way; this validates the input instead.
     const entry = write('entry-contract-violation.css', `@import "./whatever.css";`);
     let caught: unknown;
     try {
@@ -322,6 +320,84 @@ describe('verifyFontChain', () => {
     }
 
     expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as NodeJS.ErrnoException).code).toBe('ERR_INVALID_ARG_TYPE');
+    expect((caught as Error).message).toContain('resolveImport');
+    expect((caught as Error).message).toContain('./whatever.css');
+  });
+
+  it('propagates a resolveImport returning a URL object instead of misreporting it as unreadable-stylesheet (round 4 Finding B)', () => {
+    // A resolver returning `new URL(specifier, base)` instead of `.pathname` is a far likelier
+    // slip than {notAPath:true} — and under the round-3 allowlist design it slipped through
+    // entirely (readFileSync throws ERR_INVALID_URL_SCHEME for a URL object, which was not in the
+    // allowlist, so it was misreported as unreadable-stylesheet). The boundary check here rejects
+    // ANY non-string/non-undefined return, so this needs no special-casing.
+    const entry = write('entry-url-return.css', `@import "./whatever.css";`);
+    let caught: unknown;
+    try {
+      verifyFontChain({
+        entryStylesheets: [entry],
+        resolveImport: () => new URL('https://example.com/whatever.css') as unknown as string,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('URL object');
+  });
+
+  it('propagates a resolveImport returning a Proxy instead of misreporting it as unreadable-stylesheet (round 4 Finding B)', () => {
+    // Any exotic non-string shape must be rejected, not just the two shapes already covered by
+    // other tests — a Proxy is typeof 'object', same as a plain object, and must fail the same way.
+    const entry = write('entry-proxy-return.css', `@import "./whatever.css";`);
+    const proxyReturn = new Proxy({}, { get: () => 'trap' }) as unknown as string;
+    let caught: unknown;
+    try {
+      verifyFontChain({
+        entryStylesheets: [entry],
+        resolveImport: () => proxyReturn,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('resolveImport');
+  });
+
+  it('reports a NUL byte in a resolved path as unreadable-stylesheet instead of throwing (round 4 Finding A)', () => {
+    // A syntactically valid STRING path containing a NUL byte is a real fs condition
+    // (readFileSync throws ERR_INVALID_ARG_VALUE for it) — not a caller contract violation. It
+    // must pass assertResolverReturn (it IS a string) and be reported as a normal
+    // unreadable-stylesheet finding, never re-thrown.
+    const entry = write('entry-nul-byte.css', `@import "./whatever.css";`);
+    const nulBytePath = `${root}/does-not-exist\0.css`;
+
+    const result = verifyFontChain({
+      entryStylesheets: [entry],
+      resolveImport: () => nulBytePath,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'unreadable-stylesheet', subject: nulBytePath }),
+    ]);
+  });
+
+  it('reports EISDIR (a real fs-layer condition) as unreadable-stylesheet, standing in for ERR_FS_FILE_TOO_LARGE (round 4 Finding A)', () => {
+    // A real oversized (>2GiB) fixture is impractical in a test suite. EISDIR — resolving to a
+    // real DIRECTORY instead of a file — is a genuine, fully reproducible fs-layer condition with
+    // the same shape that matters here: a fact about the entity on disk, not a caller contract
+    // violation, that the unconditional catch must report rather than filter and re-throw.
+    const entry = write('entry-eisdir.css', `@import "./whatever.css";`);
+
+    const result = verifyFontChain({
+      entryStylesheets: [entry],
+      resolveImport: () => root, // a real directory, not a file
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'unreadable-stylesheet', subject: root }),
+    ]);
   });
 });

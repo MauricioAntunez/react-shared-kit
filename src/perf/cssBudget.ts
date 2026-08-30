@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { brotliCompressSync } from 'node:zlib';
-import { isFsError } from './errors.ts';
+import { assertResolverReturn, assertStringOption } from './errors.ts';
 
 /**
  * Render-blocking CSS byte budget per built document (T3, plan 2026-08-30-deploy-perf-gates).
@@ -149,6 +149,11 @@ function resolveLink(
     });
     return undefined;
   }
+  // Round 4 review finding: resolveHref can also misbehave WITHOUT throwing — returning a URL
+  // object, a Proxy, or any other non-`string | undefined` value. Validated here, before `file`
+  // ever reaches readFileSync, so that bug throws loudly and immediately instead of surfacing as a
+  // misclassified filesystem finding two calls later.
+  assertResolverReturn(file, 'resolveHref', href);
   if (file === undefined) {
     problems.push({
       kind: 'unresolvable-href',
@@ -188,11 +193,11 @@ function checkDocument(
     try {
       bytes += measuredSize(file, measure);
     } catch (error) {
-      // Round 3 review finding: a resolveHref that violates its declared string | undefined
-      // return type (returns some other value) makes readFileSync inside measuredSize throw
-      // TypeError [ERR_INVALID_ARG_TYPE] — a caller bug, not a fact about a built stylesheet. Only
-      // a genuine filesystem condition (isFsError) becomes this problem; anything else propagates.
-      if (!isFsError(error)) throw error;
+      // UNCONDITIONAL catch (round 4 review redesign): `file` reaching this point has already
+      // been validated by assertResolverReturn above — it IS a real string. Whatever readFileSync
+      // raises about it (ENOENT, EACCES, a NUL byte, ERR_FS_FILE_TOO_LARGE) is therefore a fact
+      // about the build, not a caller bug, and belongs here. See ./errors.ts for why classifying
+      // the error after the fact (what rounds 2-4a tried) cannot work.
       problems.push({
         kind: 'unreadable-file',
         html,
@@ -229,7 +234,12 @@ export function verifyCssBudget(options: VerifyCssBudgetOptions): VerifyCssBudge
     return { ok: false, problems };
   }
 
-  for (const htmlFile of htmlFiles) {
+  for (const [index, htmlFile] of htmlFiles.entries()) {
+    // Same boundary-validation principle as resolveHref's return (see errors.ts): a caller
+    // passing a non-string element in htmlFiles — a violation of the declared string[] type —
+    // must crash loudly here rather than flow into readFileSync and surface as a misclassified
+    // unreadable-html finding.
+    assertStringOption(htmlFile, `htmlFiles[${index}]`);
     let html: string;
     try {
       html = readFileSync(htmlFile, 'utf8');

@@ -39,7 +39,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { relative } from 'node:path';
 import { walkFiles } from '../image/check/walk.ts';
-import { isFsError } from './errors.ts';
+import { assertStringOption } from './errors.ts';
 
 export type HeadersProblemKind =
   | 'missing-headers-file'
@@ -138,12 +138,13 @@ function checkAssetsHashed(
     // default) is what we want here: propagate so the outer catch reports `unreadable-assets-dir`.
     assetFiles = walkFiles(assetsDir).map((abs) => relative(assetsDir, abs));
   } catch (error) {
-    // Round 3 review finding: this used to be a bare `catch {}` — it discarded the error
-    // entirely (no detail beyond "did the build run?") AND converted ANY thrown error into this
-    // problem, including a caller bug (e.g. a malformed `assetsDir` argument) rather than only a
-    // genuine filesystem condition. Now: only `isFsError` errors are reported; anything else
-    // propagates, and the real error text is included, matching the sibling gates.
-    if (!isFsError(error)) throw error;
+    // UNCONDITIONAL catch (round 4 review redesign): assetsDir is validated to be a real string
+    // on entry to verifyHeaders (assertStringOption), so whatever walkFiles/readdirSync raises
+    // about it is a fact about the build, not a caller bug. Round 3 tried to keep classifying the
+    // error here (isFsError) after already having been too broad (round 2) and too broad again in
+    // a different way (round 3's own ERR_ prefix exclusion, then a narrow allowlist that was
+    // simultaneously too inclusive AND too exclusive) — see ./errors.ts for why validating the
+    // input at the boundary instead makes this catch simple and correct.
     problems.push({
       kind: 'unreadable-assets-dir',
       path: assetsDir,
@@ -245,6 +246,13 @@ export function verifyHeaders(options: VerifyHeadersOptions): VerifyHeadersResul
     htmlPatterns = DEFAULT_HTML_PATTERNS,
   } = options;
   const problems: HeadersProblem[] = [];
+
+  // Boundary validation (round 4 review redesign), same principle as a resolver's return in the
+  // sibling gates: headersFile/assetsDir are declared as strings. A caller violating that at
+  // runtime must crash loudly here, naming the option, rather than flow into existsSync/
+  // readFileSync/walkFiles and surface as a misclassified filesystem finding downstream.
+  assertStringOption(headersFile, 'headersFile');
+  assertStringOption(assetsDir, 'assetsDir');
 
   if (!existsSync(headersFile)) {
     problems.push({

@@ -18,17 +18,26 @@
  * ONE QUALIFICATION to "returns a result object", and it is narrower than it first reads. These
  * gates return problems for every condition they are built to detect — missing files, unreadable
  * input, malformed rules, vacuous input, a resolver that declines to resolve. What they do NOT do
- * is dress a *programming* error up as one of those findings. All three run a caught error through
- * `isFsError` (`./errors.ts`) and re-throw anything that is an argument-contract violation, so a
- * consumer whose `resolveHref`/`resolveImport` returns a non-string gets a loud crash naming their
- * bug, not a plausible-looking "unreadable stylesheet" pointing at a file that is fine.
+ * is dress a *programming* error up as one of those findings. All three VALIDATE their string
+ * inputs at the boundary, rather than trying to classify an error after the fact: a
+ * `resolveHref`/`resolveImport` callback's return value, and `headers`'s `headersFile`/
+ * `assetsDir` options, are checked against their declared type (`string | undefined` for a
+ * resolver, `string` for an option) the moment they are produced — before they ever reach an fs
+ * call. A violation throws immediately, naming the resolver/option and what it actually returned,
+ * so a consumer whose `resolveHref`/`resolveImport` returns a `URL` object, a `Proxy`, or any
+ * other non-string gets a loud crash naming their bug, not a plausible-looking "unreadable
+ * stylesheet" pointing at a file that is fine.
  *
- * The boundary is deliberately narrow: exactly `ERR_INVALID_ARG_TYPE` and `ERR_INVALID_ARG_VALUE`.
- * It is NOT "any Node `ERR_*` code" — `ERR_FS_FILE_TOO_LARGE` and `ERR_FS_EISDIR` are real
- * filesystem conditions this gate exists to report, and excluding them wholesale meant an oversized
- * stylesheet crashed the build instead of failing it cleanly. It is not an error-class check
- * either: `ERR_FS_FILE_TOO_LARGE` and a stack-overflow `RangeError` are both `RangeError`, with
- * opposite verdicts. See `./errors.ts` for the full reasoning.
+ * Four rounds tried the opposite approach — classifying the error AFTER `readFileSync`/
+ * `readdirSync` had already thrown — by `.code` presence, then an `ERR_` prefix exclusion, then a
+ * narrow two-code allowlist, and each failed a new way, because Node's error codes do not
+ * partition into "caller bug" vs. "fs condition": `ERR_INVALID_ARG_VALUE` is raised both for a
+ * caller-bug `URL` object AND for a syntactically valid string path containing a NUL byte, which
+ * IS a fact about the build. Validating the resolver's own declared contract at the boundary
+ * sidesteps the classification problem entirely: once a value is known to be a real string,
+ * everything `readFileSync`/`readdirSync` subsequently raises about it — ENOENT, EACCES, EISDIR,
+ * a NUL byte, `ERR_FS_FILE_TOO_LARGE` — is unconditionally a fact about the build, and is
+ * reported, never re-thrown. See `./errors.ts` for the full reasoning.
  *
  * Fail closed means no silent pass. It does not mean pretending a defect is a finding — nor
  * pretending a finding is a defect.

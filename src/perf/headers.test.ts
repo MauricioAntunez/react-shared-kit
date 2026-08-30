@@ -346,12 +346,10 @@ describe('verifyHeaders', () => {
     expect(result.problems.some((p) => p.kind === 'unreadable-headers-file')).toBe(false);
   });
 
-  it('propagates an assetsDir contract violation instead of misreporting it as unreadable-assets-dir (round 3 review Finding B)', () => {
-    // assetsDir is declared as a string. A caller that violates that contract at runtime (a
-    // malformed options object) makes walkFiles's internal readdirSync throw
-    // TypeError [ERR_INVALID_ARG_TYPE] — a caller bug, not a fact about the built assets
-    // directory. Before Finding B's fix, checkAssetsHashed's bare `catch {}` converted ANY
-    // thrown error into 'unreadable-assets-dir' with no detail. It must propagate instead.
+  it('propagates an assetsDir contract violation instead of misreporting it as unreadable-assets-dir', () => {
+    // Round 4 review redesign: assetsDir is validated to be a real string on entry to
+    // verifyHeaders (assertStringOption), so a violation now throws OUR OWN TypeError immediately
+    // — before existsSync/walkFiles ever run — not Node's internal argument validation.
     writeCleanFixture();
     let caught: unknown;
     try {
@@ -366,7 +364,53 @@ describe('verifyHeaders', () => {
     }
 
     expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as NodeJS.ErrnoException).code).toBe('ERR_INVALID_ARG_TYPE');
+    expect((caught as Error).message).toContain('assetsDir');
+  });
+
+  it('propagates a headersFile contract violation (a URL object) instead of misreporting it (round 4 Finding B)', () => {
+    // A caller passing new URL(...) instead of a path string for headersFile — a far likelier
+    // slip than {notAPath:true} — must also be rejected at the boundary.
+    writeCleanFixture();
+    let caught: unknown;
+    try {
+      verifyHeaders({
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the headersFile contract
+        headersFile: new URL('file:///nonexistent/_headers') as any,
+        assetsDir,
+        immutablePrefixes: ['/assets/'],
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('headersFile');
+    expect((caught as Error).message).toContain('URL object');
+  });
+
+  it('reports a NUL byte in assetsDir as unreadable-assets-dir instead of throwing (round 4 Finding A)', () => {
+    // A syntactically valid STRING directory path containing a NUL byte is a real fs condition
+    // (readdirSync throws ERR_INVALID_ARG_VALUE for it) — not a caller contract violation. It must
+    // pass assertStringOption (it IS a string) and be reported as a normal unreadable-assets-dir
+    // finding, never re-thrown.
+    writeFileSync(
+      headersFile,
+      ['/assets/*', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const nulByteDir = `${root}/does-not-exist\0`;
+
+    const result = verifyHeaders({
+      headersFile,
+      assetsDir: nulByteDir,
+      immutablePrefixes: ['/assets/'],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'unreadable-assets-dir', path: nulByteDir }),
+      ]),
+    );
   });
 
   // --- Round-2 MUST-FIX 1: an empty or root prefix must never authorise everything ----------

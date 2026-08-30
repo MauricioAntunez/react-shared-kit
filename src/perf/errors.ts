@@ -1,62 +1,75 @@
 /**
- * Shared error classification for every `./perf` gate that guards a filesystem read (or a
- * consumer-supplied callback standing in for one) against becoming an uncaught crash.
+ * Shared input validation for every `./perf` gate that hands a consumer-supplied value (a
+ * resolver's return, a string option) to a filesystem call.
  *
  * INTERNAL ONLY — imported by the sibling gate modules in this directory, never re-exported from
  * `./index.ts`. Not part of the package's public surface.
  *
- * The problem this solves, twice over (round 2 and round 3 review findings on `fontChain.ts`,
- * then found to be missing entirely from `cssBudget.ts` and `headers.ts`):
+ * ROUND 4 REDESIGN — validate the input, do not classify the error. Four consecutive review
+ * rounds tried to guess, AFTER `readFileSync`/`readdirSync` had already thrown, whether the error
+ * meant "this is a fact about the file" or "the caller broke a contract":
+ *   - round 2: any error carrying a `.code` was an fs fact. Wrong — `ERR_INVALID_ARG_TYPE` (a
+ *     resolver returning the wrong shape) also carries one.
+ *   - round 3: exclude any `ERR_`-prefixed code as a caller bug. Wrong — `ERR_FS_FILE_TOO_LARGE`
+ *     and `ERR_FS_EISDIR` are genuine fs conditions that also start with `ERR_`.
+ *   - round 4a: narrow the exclusion to exactly `ERR_INVALID_ARG_TYPE`/`ERR_INVALID_ARG_VALUE`.
+ *     Wrong in BOTH directions at once: `ERR_INVALID_ARG_VALUE` is also what `readFileSync` throws
+ *     for a syntactically valid string containing a NUL byte — a real fs-worthy fact, not a caller
+ *     bug — so excluding it crashed the gate on a single stray byte in a committed file; and a
+ *     resolver returning a `URL` object raises `ERR_INVALID_URL_SCHEME`, uncovered by the
+ *     allowlist, so THAT caller bug slipped through and got reported as "unreadable file".
+ * Node's error codes simply do not partition into "caller bug" vs. "fs condition" — the same code
+ * can be either, depending on what produced it, and any finite code allowlist misses whatever
+ * exotic value a resolver returns next (a `Proxy`, a `Buffer`, a number, `null`).
  *
- *   1. A gate's read of a file it does not control (a resolved path, a consumer-named directory)
- *      can fail for a real, reportable reason — ENOENT, EACCES, EISDIR, ENAMETOOLONG, ELOOP, or
- *      Node's own `ERR_FS_FILE_TOO_LARGE` (>2GiB) / `ERR_FS_EISDIR`. Every one of those is a FACT
- *      ABOUT THE BUILD and belongs in the gate's `problems` list.
- *   2. The exact same `catch` can also see something that is not about the build at all: a
- *      `RangeError: Maximum call stack size exceeded` from a runaway walk, or a
- *      `TypeError [ERR_INVALID_ARG_TYPE]` because a consumer-supplied `resolveHref`/`resolveImport`
- *      returned something other than the `string | undefined` it promised (`readFileSync` throws
- *      that the moment it is handed a non-string). Reporting either of those as "your CSS file is
- *      unreadable" hides a control-flow catastrophe or a caller bug behind a plausible-looking,
- *      wrong finding.
- *
- * A bare `.code` allowlist is not enough: round 2 tried `typeof code === 'string'`, which
- * misclassified `ERR_INVALID_ARG_TYPE` as an fs error (case 2). Round 3 then over-corrected to
- * "any `ERR_`-prefixed code is not an fs error", which misclassifies `ERR_FS_FILE_TOO_LARGE` and
- * `ERR_FS_EISDIR` — genuine Node fs-layer conditions that also happen to start with `ERR_` — as
- * caller bugs (case 1). Neither a bare presence-of-`.code` check nor a bare prefix check
- * separates the two cases; the actual boundary is which SPECIFIC codes mean "the caller violated
- * an argument contract" vs. everything else, which does mean a real filesystem condition.
- *
- * Class alone does not resolve it either: `ERR_INVALID_ARG_TYPE` is a `TypeError`, but so is a
- * plain caller bug that just constructs one, and `ERR_FS_FILE_TOO_LARGE` and a stack-overflow
- * `RangeError` are BOTH `RangeError`s — same class, opposite verdict (one is a build fact, the
- * other is not). So this uses a narrow, explicit code allowlist of Node's own argument-validation
- * errors — `ERR_INVALID_ARG_TYPE` and `ERR_INVALID_ARG_VALUE`, both raised by Node's internal
- * `validate*` helpers when a caller hands a value of the wrong shape, never by the fs layer for a
- * condition about a file on disk. A stack overflow needs no entry here: it carries no `.code` at
- * all, so it is excluded by the base "has a string code" check before the allowlist is ever
- * consulted.
+ * So this stops trying to read the error and instead enforces the one thing that IS stable: the
+ * resolver's own declared contract (`(input) => string | undefined`) and an option's declared type
+ * (`string`). Checked the moment the value is produced, before it ever reaches an fs call. Once
+ * that passes, every gate's `readFileSync`/`readdirSync` catch reports UNCONDITIONALLY — no
+ * further classification, because a value that is provably a string can only fail there for a real
+ * reason about the thing it names (missing, a directory, too large, a NUL byte, no permission).
  */
 
-/** Codes Node's own argument validators raise when a caller passes a value of the wrong shape —
- * a contract violation, never a fact about a file on disk. See module doc comment for why a
- * broader `ERR_` prefix match is wrong (it also catches genuine fs-layer codes like
- * `ERR_FS_FILE_TOO_LARGE`). */
-const ARGUMENT_CONTRACT_VIOLATION_CODES: ReadonlySet<string> = new Set([
-  'ERR_INVALID_ARG_TYPE',
-  'ERR_INVALID_ARG_VALUE',
-]);
+/** A short, readable description of an unexpected value for an error message — never assumes it
+ * is an object with a sensible `.constructor`, since the whole point is that its shape is
+ * unpredictable (a `Proxy`, a primitive, `null`, an array). */
+function describeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  if (value instanceof URL) return 'a URL object (did you mean its .pathname or .href?)';
+  if (typeof value === 'object') {
+    const name = (value as { constructor?: { name?: string } }).constructor?.name;
+    return `an instance of ${name ?? 'Object'}`;
+  }
+  return `a ${typeof value} (${String(value)})`;
+}
 
 /**
- * Is `error` a filesystem condition safe to convert into a `problems` entry, as opposed to a
- * control-flow catastrophe (no `.code` at all — e.g. a stack-overflow `RangeError`) or a
- * consumer callback's contract violation (`ERR_INVALID_ARG_TYPE`/`ERR_INVALID_ARG_VALUE`) that
- * must propagate instead of being reported as if it were about the build?
+ * Enforces a resolver callback's declared `(input) => string | undefined` contract on its return
+ * value, throwing immediately if it is neither. This is the boundary check that replaces
+ * after-the-fact error classification (see module doc comment): a resolver returning a `URL`, a
+ * `Proxy`, a number, or anything else non-string is a caller bug and must crash loudly, naming the
+ * resolver and the input it was given, rather than flow into `readFileSync` and surface as an
+ * oblique, misclassified fs error two calls later.
  */
-export function isFsError(error: unknown): error is NodeJS.ErrnoException {
-  if (!(error instanceof Error)) return false;
-  const code = (error as NodeJS.ErrnoException).code;
-  if (typeof code !== 'string') return false;
-  return !ARGUMENT_CONTRACT_VIOLATION_CODES.has(code);
+export function assertResolverReturn(
+  value: unknown,
+  resolverLabel: string,
+  input: string,
+): asserts value is string | undefined {
+  if (value === undefined || typeof value === 'string') return;
+  throw new TypeError(
+    `${resolverLabel}(${JSON.stringify(input)}) must return a string or undefined per its ` +
+      `declared contract, but returned ${describeValue(value)}.`,
+  );
+}
+
+/**
+ * Enforces a required string option's declared type, throwing immediately if it is not a string.
+ * Same reasoning as `assertResolverReturn`, for options like `headersFile`/`assetsDir` that (unlike
+ * a resolver's return) have no legitimate `undefined` case.
+ */
+export function assertStringOption(value: unknown, optionName: string): asserts value is string {
+  if (typeof value === 'string') return;
+  throw new TypeError(`${optionName} must be a string, but received ${describeValue(value)}.`);
 }

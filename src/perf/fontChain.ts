@@ -50,7 +50,7 @@
  *     `@font-face` block is never treated as live.
  */
 import { readFileSync } from 'node:fs';
-import { isFsError } from './errors.ts';
+import { assertResolverReturn, assertStringOption } from './errors.ts';
 
 export type FontChainProblemKind =
   | 'empty-input'
@@ -185,21 +185,20 @@ interface WalkState {
  * Reads and comment-strips one stylesheet, reporting `unreadable-stylesheet` and returning
  * `undefined` on failure. FAIL CLOSED — an unreadable file is never a silent pass.
  *
- * Only filesystem errors (`isFsError`) are converted into that problem. Anything else — most
- * notably a `RangeError` from a stack overflow — is RE-THROWN. PR #4 review finding: a generic
- * `catch` here previously absorbed a `RangeError: Maximum call stack size exceeded` (produced by
- * an unbounded recursive walk with its cycle guard removed) and reported it as a plausible-looking
- * `unreadable-stylesheet` problem, letting the test suite stay green while a control-flow
- * catastrophe was happening underneath it. A stack overflow must never look like a missing file.
- * See `./errors.ts` for the full classification (including why a stack overflow, a genuine 2GiB+
- * file, and a resolver contract violation all need DIFFERENT verdicts despite overlapping error
- * shapes — round 3 review finding).
+ * UNCONDITIONAL catch (round 4 review redesign): every caller of this function only ever passes a
+ * value already proven to be a real string — the entry path (validated in `verifyFontChain`) or a
+ * resolved path (validated by `assertResolverReturn` in `safeResolveImport` before it is ever
+ * queued). Given a real string, whatever `readFileSync` raises about it — ENOENT, EACCES, EISDIR,
+ * `ERR_FS_FILE_TOO_LARGE`, a NUL byte — IS a fact about the build and belongs in `problems`. See
+ * `./errors.ts` for why classifying the error after the fact (what round 2-4 tried) cannot work,
+ * and why validating the input at the boundary instead makes this catch simple again. The walk is
+ * also iterative (BFS, not recursive — see `walk`), so the stack-overflow scenario that once made
+ * this catch's classification matter no longer arises here at all.
  */
 function readStylesheet(state: WalkState, path: string, chain: string[]): string | undefined {
   try {
     return stripComments(readFileSync(path, 'utf8'));
   } catch (error) {
-    if (!isFsError(error)) throw error;
     state.problems.push({
       kind: 'unreadable-stylesheet',
       entry: state.entryLabel,
@@ -236,6 +235,11 @@ function safeResolveImport(
     });
     return undefined;
   }
+  // Round 4 review finding: resolveImport can also misbehave WITHOUT throwing — returning a URL
+  // object, a Proxy, or any other non-`string | undefined` value. Validated here, before `resolved`
+  // ever reaches readFileSync, so that bug throws loudly and immediately instead of surfacing as a
+  // misclassified filesystem finding two calls later.
+  assertResolverReturn(resolved, 'resolveImport', specifier);
   if (resolved === undefined) {
     state.problems.push({
       kind: 'unresolvable-import',
@@ -365,7 +369,12 @@ export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChai
     return { ok: false, problems };
   }
 
-  for (const entry of entryStylesheets) {
+  for (const [index, entry] of entryStylesheets.entries()) {
+    // Same boundary-validation principle as the resolver return (see errors.ts): a caller passing
+    // a non-string element in entryStylesheets — a violation of the declared string[] type — must
+    // crash loudly here rather than flow into readFileSync and surface as a misclassified
+    // unreadable-stylesheet finding.
+    assertStringOption(entry, `entryStylesheets[${index}]`);
     const state: WalkState = {
       problems,
       entryLabel: entry,

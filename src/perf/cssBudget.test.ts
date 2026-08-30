@@ -225,13 +225,10 @@ describe('verifyCssBudget', () => {
     ]);
   });
 
-  it('propagates a resolveHref contract violation instead of misreporting it as unreadable-file (round 3 review Finding B)', () => {
-    // resolveHref is declared (href: string) => string | undefined. A resolver that returns some
-    // OTHER value (an object) does not throw itself — resolveLink accepts it as `file` without
-    // complaint — so the violation only surfaces later, inside measuredSize's readFileSync, as
-    // TypeError [ERR_INVALID_ARG_TYPE]. Before Finding B's fix, checkDocument's catch converted
-    // ANY thrown error into 'unreadable-file', reporting the consumer's own bug as "your CSS file
-    // is unreadable" with a non-string `file`. It must propagate instead.
+  it('propagates a resolveHref contract violation ({notAPath:true}) instead of misreporting it as unreadable-file', () => {
+    // Round 4 review redesign: a resolveHref that violates its declared string | undefined
+    // contract now throws from OUR OWN assertResolverReturn boundary check, before the bad value
+    // ever reaches readFileSync — not from Node's internal argument validation.
     const html = write(
       'index.html',
       '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
@@ -251,6 +248,102 @@ describe('verifyCssBudget', () => {
     }
 
     expect(caught).toBeInstanceOf(TypeError);
-    expect((caught as NodeJS.ErrnoException).code).toBe('ERR_INVALID_ARG_TYPE');
+    expect((caught as Error).message).toContain('resolveHref');
+    expect((caught as Error).message).toContain('/main.css');
+  });
+
+  it('propagates a resolveHref returning a URL object instead of misreporting it as unreadable-file (round 4 Finding B)', () => {
+    // A resolver returning new URL(href, cdnBase) instead of .pathname is a far likelier slip than
+    // {notAPath:true} — and under the round-3 allowlist design it slipped through entirely
+    // (readFileSync throws ERR_INVALID_URL_SCHEME for a URL object, uncovered by the allowlist,
+    // so it was misreported as a plausible-looking unreadable-file). The boundary check here
+    // rejects ANY non-string/non-undefined return, so this needs no special-casing.
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+
+    let caught: unknown;
+    try {
+      verifyCssBudget({
+        htmlFiles: [html],
+        resolveHref: () => new URL('https://cdn.example.com/main.css') as unknown as string,
+        maxBytes: 1_000_000,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('URL object');
+  });
+
+  it('propagates a resolveHref returning a Proxy instead of misreporting it as unreadable-file (round 4 Finding B)', () => {
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+    const proxyReturn = new Proxy({}, { get: () => 'trap' }) as unknown as string;
+
+    let caught: unknown;
+    try {
+      verifyCssBudget({
+        htmlFiles: [html],
+        resolveHref: () => proxyReturn,
+        maxBytes: 1_000_000,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('resolveHref');
+  });
+
+  it('reports a NUL byte in a resolved path as unreadable-file instead of throwing (round 4 Finding A)', () => {
+    // A syntactically valid STRING path containing a NUL byte is a real fs condition
+    // (readFileSync throws ERR_INVALID_ARG_VALUE for it) — not a caller contract violation. It
+    // must pass assertResolverReturn (it IS a string) and be reported as a normal unreadable-file
+    // finding, never re-thrown. Reproduction from round 4 review: a NUL byte committed into a
+    // built <link href>, extracted verbatim by attr()'s [^"]*, flowing through a fully
+    // contract-compliant resolver like (href) => join(dir, href).
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+    const nulBytePath = `${root}/does-not-exist\0.css`;
+
+    const result = verifyCssBudget({
+      htmlFiles: [html],
+      resolveHref: () => nulBytePath,
+      maxBytes: 1_000_000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'unreadable-file', file: nulBytePath }),
+    ]);
+  });
+
+  it('reports EISDIR (a real fs-layer condition) as unreadable-file, standing in for ERR_FS_FILE_TOO_LARGE (round 4 Finding A)', () => {
+    // A real oversized (>2GiB) fixture is impractical in a test suite. EISDIR — resolving to a
+    // real DIRECTORY instead of a file — is a genuine, fully reproducible fs-layer condition with
+    // the same shape that matters here: a fact about the entity on disk, not a caller contract
+    // violation, that the unconditional catch must report rather than filter and re-throw.
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+
+    const result = verifyCssBudget({
+      htmlFiles: [html],
+      resolveHref: () => root, // a real directory, not a file
+      maxBytes: 1_000_000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'unreadable-file', file: root }),
+    ]);
   });
 });

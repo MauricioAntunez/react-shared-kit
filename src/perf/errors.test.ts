@@ -1,81 +1,98 @@
 import { describe, expect, it } from 'vitest';
-import { isFsError } from './errors.ts';
+import { assertResolverReturn, assertStringOption } from './errors.ts';
 
 /**
- * Direct unit tests of the shared discriminator, since it is what every gate's `catch` delegates
- * to — proving it here proves the integration in `fontChain.ts`, `cssBudget.ts`, and `headers.ts`
- * by construction, without needing to mock `node:fs` in three different places.
+ * Direct unit tests of the shared boundary-validation helpers, since every gate's resolver call
+ * and string option delegates to these — proving the helpers here proves the integration in
+ * `fontChain.ts`, `cssBudget.ts`, and `headers.ts` by construction.
  *
- * `ERR_FS_FILE_TOO_LARGE` (round 3 review Finding A) is proven with a CONSTRUCTED error object
- * carrying that shape, not an actual >2GiB file on disk — the review explicitly asked for this
- * ("mock the throw, do not create a 2GB file").
+ * Round 4 review retired the old error-CLASSIFICATION approach (`isFsError`) entirely: four
+ * consecutive rounds of guessing, after `readFileSync` had already thrown, whether the error meant
+ * "fs fact" or "caller bug" each failed differently (too broad, too narrow, then simultaneously
+ * both). These tests instead prove the boundary check that replaced it: a resolver's return value,
+ * or a required string option, is validated against its OWN declared type before it ever reaches
+ * an fs call.
  */
 
-/** Builds an object matching Node's `NodeJS.ErrnoException` shape without needing a real
- * filesystem call to produce it. */
-function errnoException(
-  ctor: typeof Error | typeof TypeError | typeof RangeError,
-  code: string,
-  message: string,
-): NodeJS.ErrnoException {
-  const error = new ctor(message) as NodeJS.ErrnoException;
-  error.code = code;
-  return error;
-}
-
-describe('isFsError', () => {
-  it('accepts a genuine POSIX fs error (ENOENT)', () => {
-    expect(isFsError(errnoException(Error, 'ENOENT', 'no such file or directory'))).toBe(true);
+describe('assertResolverReturn', () => {
+  it('accepts a string', () => {
+    expect(() => assertResolverReturn('/real/path.css', 'resolveHref', '/main.css')).not.toThrow();
   });
 
-  it('accepts a genuine POSIX fs error (EACCES)', () => {
-    expect(isFsError(errnoException(Error, 'EACCES', 'permission denied'))).toBe(true);
+  it('accepts undefined', () => {
+    expect(() => assertResolverReturn(undefined, 'resolveHref', '/main.css')).not.toThrow();
   });
 
-  it('accepts ERR_FS_FILE_TOO_LARGE — a genuine fs condition despite the ERR_ prefix (round 3 Finding A)', () => {
-    // The reproduction: readFileSync on a file over ~2GiB throws exactly this shape. Round 2's
-    // fix excluded EVERY `ERR_`-prefixed code, which wrongly rejected this one too — an oversized
-    // stylesheet would have crashed the gate instead of being reported.
-    const error = errnoException(
-      RangeError,
-      'ERR_FS_FILE_TOO_LARGE',
-      'File size (2200000000) is greater than 2 GiB',
+  it('accepts a string containing a NUL byte — that is a filesystem fact, not a contract violation (round 4 Finding A)', () => {
+    // The whole point of validating TYPE rather than classifying a downstream error: a NUL byte
+    // makes the string un-openable, but it is still, unambiguously, a string. Rejecting it here
+    // would just reintroduce the same "guess what readFileSync will do with it" failure mode this
+    // redesign exists to retire.
+    expect(() =>
+      assertResolverReturn('/real/path\0.css', 'resolveHref', '/main.css'),
+    ).not.toThrow();
+  });
+
+  it('rejects a plain object ({notAPath: true})', () => {
+    expect(() =>
+      assertResolverReturn({ notAPath: true } as unknown as string, 'resolveImport', './x.css'),
+    ).toThrow(/resolveImport/);
+  });
+
+  it('rejects a URL object, naming it specifically since it is a likely real mistake (round 4 Finding B)', () => {
+    const url = new URL('https://cdn.example.com/main.css');
+    expect(() =>
+      assertResolverReturn(url as unknown as string, 'resolveHref', '/main.css'),
+    ).toThrow(/URL object/);
+  });
+
+  it('rejects a Proxy — any exotic non-string shape, not just the two shapes covered above', () => {
+    const proxy = new Proxy({}, { get: () => 'trap' }) as unknown as string;
+    expect(() => assertResolverReturn(proxy, 'resolveImport', './x.css')).toThrow(/resolveImport/);
+  });
+
+  it('rejects null', () => {
+    expect(() =>
+      assertResolverReturn(null as unknown as string, 'resolveHref', '/main.css'),
+    ).toThrow();
+  });
+
+  it('rejects a number', () => {
+    expect(() =>
+      assertResolverReturn(42 as unknown as string, 'resolveHref', '/main.css'),
+    ).toThrow();
+  });
+
+  it('names the resolver and the input in the thrown message', () => {
+    expect(() =>
+      assertResolverReturn({} as unknown as string, 'resolveImport', './specific-specifier.css'),
+    ).toThrow(/resolveImport.*specific-specifier\.css/);
+  });
+});
+
+describe('assertStringOption', () => {
+  it('accepts a string', () => {
+    expect(() => assertStringOption('/built/_headers', 'headersFile')).not.toThrow();
+  });
+
+  it('accepts a string containing a NUL byte — a filesystem fact, not a contract violation', () => {
+    expect(() => assertStringOption('/built/_headers\0', 'headersFile')).not.toThrow();
+  });
+
+  it('rejects a URL object, naming both the option and the mistake (round 4 Finding B)', () => {
+    const url = new URL('file:///built/_headers');
+    expect(() => assertStringOption(url as unknown as string, 'headersFile')).toThrow(
+      /headersFile.*URL object/s,
     );
-    expect(isFsError(error)).toBe(true);
   });
 
-  it('accepts ERR_FS_EISDIR — another genuine Node fs-layer code with the ERR_ prefix', () => {
-    expect(
-      isFsError(errnoException(Error, 'ERR_FS_EISDIR', 'illegal operation on a directory')),
-    ).toBe(true);
+  it('rejects a plain object', () => {
+    expect(() => assertStringOption({ notAPath: true } as unknown as string, 'assetsDir')).toThrow(
+      /assetsDir/,
+    );
   });
 
-  it('rejects ERR_INVALID_ARG_TYPE — a caller contract violation, not a filesystem fact', () => {
-    const error = errnoException(TypeError, 'ERR_INVALID_ARG_TYPE', 'wrong type');
-    expect(isFsError(error)).toBe(false);
-  });
-
-  it('rejects ERR_INVALID_ARG_VALUE — same contract-violation class', () => {
-    const error = errnoException(TypeError, 'ERR_INVALID_ARG_VALUE', 'invalid value');
-    expect(isFsError(error)).toBe(false);
-  });
-
-  it('rejects a stack-overflow RangeError, which carries no .code at all', () => {
-    function recurse(): never {
-      return recurse();
-    }
-    let caught: unknown;
-    try {
-      recurse();
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(RangeError);
-    expect(isFsError(caught)).toBe(false);
-  });
-
-  it('rejects a non-Error thrown value', () => {
-    expect(isFsError('a plain string was thrown')).toBe(false);
-    expect(isFsError({ code: 'ENOENT' })).toBe(false);
+  it('rejects undefined (unlike assertResolverReturn, this option has no legitimate undefined case)', () => {
+    expect(() => assertStringOption(undefined as unknown as string, 'assetsDir')).toThrow();
   });
 });
