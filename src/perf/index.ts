@@ -18,12 +18,12 @@
  * ONE QUALIFICATION to "returns a result object", and it is narrower than it first reads. These
  * gates return problems for every condition they are built to detect — missing files, unreadable
  * input, malformed rules, vacuous input, a resolver that declines to resolve. What they do NOT do
- * is dress a *programming* error up as one of those findings. All three VALIDATE their string
+ * is dress a *programming* error up as one of those findings. All FOUR VALIDATE their string
  * inputs at the boundary, rather than trying to classify an error after the fact: a
- * `resolveHref`/`resolveImport` callback's return value, and `headers`'s `headersFile`/
- * `assetsDir` options, are checked against their declared type (`string | undefined` for a
- * resolver, `string` for an option) the moment they are produced — before they ever reach an fs
- * call. A violation throws immediately, naming the resolver/option and what it actually returned,
+ * `resolveHref`/`resolveImport` callback's return value, `headers`'s `headersFile`/`assetsDir`
+ * options, and the `htmlFiles`/`cssFiles`/`entryStylesheets` array ELEMENTS, are checked against
+ * their declared type (`string | undefined` for a resolver, `string` for an option or element) the
+ * moment they are produced — before they ever reach an fs call. A violation throws immediately, naming the resolver/option and what it actually returned,
  * so a consumer whose `resolveHref`/`resolveImport` returns a `URL` object, a `Proxy`, or any
  * other non-string gets a loud crash naming their bug, not a plausible-looking "unreadable
  * stylesheet" pointing at a file that is fine.
