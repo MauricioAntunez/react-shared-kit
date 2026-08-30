@@ -39,6 +39,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { relative } from 'node:path';
 import { walkFiles } from '../image/check/walk.ts';
+import { isFsError } from './errors.ts';
 
 export type HeadersProblemKind =
   | 'missing-headers-file'
@@ -52,6 +53,19 @@ export type HeadersProblemKind =
 
 export interface HeadersProblem {
   kind: HeadersProblemKind;
+  /**
+   * What `path` means varies by `kind` — it is never a single consistent shape (round 3 review
+   * finding, mirroring `FontChainProblem.subject`'s per-kind doc):
+   *   - `missing-headers-file`, `unreadable-headers-file` — `headersFile`, the built file itself.
+   *   - `unreadable-assets-dir` — `assetsDir`, a DIRECTORY, not a file.
+   *   - `empty-input` — either `assetsDir` (the readable-but-empty-directory case) or
+   *     `headersFile` (the parses-to-0-rules case); which one fired determines which this is.
+   *   - `unhashed-asset` — `${assetsDir}/${relPath}`, one FILE under `assetsDir`.
+   *   - `invalid-immutable-prefix` — the raw, as-passed `immutablePrefixes` OPTION STRING that
+   *     was rejected, not a filesystem path at all.
+   *   - `unauthorized-immutable`, `html-rule` — `rule.path`, a RULE PATH parsed out of
+   *     `headersFile` (e.g. `/assets/*`), not a path on disk.
+   */
   path: string;
   detail: string;
 }
@@ -123,13 +137,17 @@ function checkAssetsHashed(
     // while the real unhashed file underneath goes unexamined. `onReaddirError: 'throw'` (the
     // default) is what we want here: propagate so the outer catch reports `unreadable-assets-dir`.
     assetFiles = walkFiles(assetsDir).map((abs) => relative(assetsDir, abs));
-  } catch {
-    // Fail closed: an unreadable/missing assets dir is a DIFFERENT fact from "0 files found" — a
-    // consumer aggregating by kind must not read this as "1 unhashed asset".
+  } catch (error) {
+    // Round 3 review finding: this used to be a bare `catch {}` — it discarded the error
+    // entirely (no detail beyond "did the build run?") AND converted ANY thrown error into this
+    // problem, including a caller bug (e.g. a malformed `assetsDir` argument) rather than only a
+    // genuine filesystem condition. Now: only `isFsError` errors are reported; anything else
+    // propagates, and the real error text is included, matching the sibling gates.
+    if (!isFsError(error)) throw error;
     problems.push({
       kind: 'unreadable-assets-dir',
       path: assetsDir,
-      detail: `could not read "${assetsDir}" — did the build run?`,
+      detail: `could not read "${assetsDir}": ${String(error)}`,
     });
     return;
   }

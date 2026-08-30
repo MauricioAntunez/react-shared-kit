@@ -224,4 +224,33 @@ describe('verifyCssBudget', () => {
       expect.objectContaining({ kind: 'resolver-threw', href: '/main.css' }),
     ]);
   });
+
+  it('propagates a resolveHref contract violation instead of misreporting it as unreadable-file (round 3 review Finding B)', () => {
+    // resolveHref is declared (href: string) => string | undefined. A resolver that returns some
+    // OTHER value (an object) does not throw itself — resolveLink accepts it as `file` without
+    // complaint — so the violation only surfaces later, inside measuredSize's readFileSync, as
+    // TypeError [ERR_INVALID_ARG_TYPE]. Before Finding B's fix, checkDocument's catch converted
+    // ANY thrown error into 'unreadable-file', reporting the consumer's own bug as "your CSS file
+    // is unreadable" with a non-string `file`. It must propagate instead.
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
+    const contractViolatingResolver = (() => ({ notAPath: true })) as any;
+
+    let caught: unknown;
+    try {
+      verifyCssBudget({
+        htmlFiles: [html],
+        resolveHref: contractViolatingResolver,
+        maxBytes: 1_000_000,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as NodeJS.ErrnoException).code).toBe('ERR_INVALID_ARG_TYPE');
+  });
 });

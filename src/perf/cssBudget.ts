@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { brotliCompressSync } from 'node:zlib';
+import { isFsError } from './errors.ts';
 
 /**
  * Render-blocking CSS byte budget per built document (T3, plan 2026-08-30-deploy-perf-gates).
@@ -187,6 +188,11 @@ function checkDocument(
     try {
       bytes += measuredSize(file, measure);
     } catch (error) {
+      // Round 3 review finding: a resolveHref that violates its declared string | undefined
+      // return type (returns some other value) makes readFileSync inside measuredSize throw
+      // TypeError [ERR_INVALID_ARG_TYPE] — a caller bug, not a fact about a built stylesheet. Only
+      // a genuine filesystem condition (isFsError) becomes this problem; anything else propagates.
+      if (!isFsError(error)) throw error;
       problems.push({
         kind: 'unreadable-file',
         html,

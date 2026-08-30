@@ -346,6 +346,29 @@ describe('verifyHeaders', () => {
     expect(result.problems.some((p) => p.kind === 'unreadable-headers-file')).toBe(false);
   });
 
+  it('propagates an assetsDir contract violation instead of misreporting it as unreadable-assets-dir (round 3 review Finding B)', () => {
+    // assetsDir is declared as a string. A caller that violates that contract at runtime (a
+    // malformed options object) makes walkFiles's internal readdirSync throw
+    // TypeError [ERR_INVALID_ARG_TYPE] — a caller bug, not a fact about the built assets
+    // directory. Before Finding B's fix, checkAssetsHashed's bare `catch {}` converted ANY
+    // thrown error into 'unreadable-assets-dir' with no detail. It must propagate instead.
+    writeCleanFixture();
+    let caught: unknown;
+    try {
+      verifyHeaders({
+        headersFile,
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the assetsDir contract
+        assetsDir: { notAPath: true } as any,
+        immutablePrefixes: ['/assets/'],
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as NodeJS.ErrnoException).code).toBe('ERR_INVALID_ARG_TYPE');
+  });
+
   // --- Round-2 MUST-FIX 1: an empty or root prefix must never authorise everything ----------
 
   it('RED: fires invalid-immutable-prefix for a root prefix ("/") instead of authorising everything', () => {

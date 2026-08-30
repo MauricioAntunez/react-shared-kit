@@ -50,6 +50,7 @@
  *     `@font-face` block is never treated as live.
  */
 import { readFileSync } from 'node:fs';
+import { isFsError } from './errors.ts';
 
 export type FontChainProblemKind =
   | 'empty-input'
@@ -169,26 +170,6 @@ function scanFontFaces(css: string): FontFaceScanResult {
   return { urls, unterminatedBlocks };
 }
 
-/**
- * Node's `fs` errors (`ENOENT`, `EACCES`, `EISDIR`, `ENAMETOOLONG`, `ELOOP`, ...) all carry a
- * POSIX-style string `.code`. Used to tell a real filesystem failure apart from an unrelated
- * thrown error — see `readStylesheet`.
- *
- * Node's own internal validation errors (`TypeError [ERR_INVALID_ARG_TYPE]`, thrown by
- * `readFileSync` itself when handed a non-string path) ALSO carry a string `.code` — one starting
- * `ERR_`. Round 2 review finding: without excluding that prefix, a `resolveImport` that violates
- * its declared `string | undefined` contract (returns some other value) makes `readFileSync`
- * throw `ERR_INVALID_ARG_TYPE`, which this predicate then misreports as `unreadable-stylesheet`
- * — exactly the "a control-flow catastrophe must never look like a missing file" failure this
- * predicate exists to prevent, just from a different kind of caller bug. Excluding `ERR_*` loses
- * nothing: no real POSIX fs error code uses that prefix.
- */
-function isFsError(error: unknown): error is NodeJS.ErrnoException {
-  if (!(error instanceof Error)) return false;
-  const code = (error as NodeJS.ErrnoException).code;
-  return typeof code === 'string' && !code.startsWith('ERR_');
-}
-
 interface WalkState {
   problems: FontChainProblem[];
   entryLabel: string;
@@ -210,6 +191,9 @@ interface WalkState {
  * an unbounded recursive walk with its cycle guard removed) and reported it as a plausible-looking
  * `unreadable-stylesheet` problem, letting the test suite stay green while a control-flow
  * catastrophe was happening underneath it. A stack overflow must never look like a missing file.
+ * See `./errors.ts` for the full classification (including why a stack overflow, a genuine 2GiB+
+ * file, and a resolver contract violation all need DIFFERENT verdicts despite overlapping error
+ * shapes — round 3 review finding).
  */
 function readStylesheet(state: WalkState, path: string, chain: string[]): string | undefined {
   try {

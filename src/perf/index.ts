@@ -15,14 +15,23 @@
  *   - Fail closed. An unreadable file, an unparseable rule or an unrecognised shape is a problem,
  *     never a silent pass.
  *
- * ONE QUALIFICATION to "returns a result object", added after review: these gates return problems
- * for every condition they are built to detect — missing files, unreadable input, malformed rules,
- * vacuous input, a resolver that declines to resolve. They do NOT swallow a *programming* error.
- * `verifyFontChain` deliberately re-throws anything that is not a filesystem failure, because the
- * alternative is worse: a catch broad enough to absorb, say, a stack overflow would report it as
- * "unreadable stylesheet", and a consumer would go looking for a missing file that exists. A bug in
- * the kit or in a consumer's callback should surface as the loud crash it is. Fail closed means no
- * silent pass; it does not mean pretend a defect is a finding.
+ * ONE QUALIFICATION to "returns a result object", and it is narrower than it first reads. These
+ * gates return problems for every condition they are built to detect — missing files, unreadable
+ * input, malformed rules, vacuous input, a resolver that declines to resolve. What they do NOT do
+ * is dress a *programming* error up as one of those findings. All three run a caught error through
+ * `isFsError` (`./errors.ts`) and re-throw anything that is an argument-contract violation, so a
+ * consumer whose `resolveHref`/`resolveImport` returns a non-string gets a loud crash naming their
+ * bug, not a plausible-looking "unreadable stylesheet" pointing at a file that is fine.
+ *
+ * The boundary is deliberately narrow: exactly `ERR_INVALID_ARG_TYPE` and `ERR_INVALID_ARG_VALUE`.
+ * It is NOT "any Node `ERR_*` code" — `ERR_FS_FILE_TOO_LARGE` and `ERR_FS_EISDIR` are real
+ * filesystem conditions this gate exists to report, and excluding them wholesale meant an oversized
+ * stylesheet crashed the build instead of failing it cleanly. It is not an error-class check
+ * either: `ERR_FS_FILE_TOO_LARGE` and a stack-overflow `RangeError` are both `RangeError`, with
+ * opposite verdicts. See `./errors.ts` for the full reasoning.
+ *
+ * Fail closed means no silent pass. It does not mean pretending a defect is a finding — nor
+ * pretending a finding is a defect.
  *
  * SCOPE BOUNDARY, ruled by the user 2026-08-30: this module ships gates, never styles. No CSS, no
  * @font-face, no design tokens, no font files. The kit measures; the consuming project fixes. That
