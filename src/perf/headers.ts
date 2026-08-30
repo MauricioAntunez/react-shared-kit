@@ -9,27 +9,41 @@
  * parameter here, with that script's boufin values kept as the documented default.
  *
  * Four checks, per design doc §3.1:
- *   1. `headersFile` exists.
- *   2. Every file under `assetsDir` carries a content hash (matches `hashPattern`).
- *   3. No rule in `headersFile` grants `immutable` to a path outside `immutablePrefixes`.
+ *   1. `headersFile` exists and is readable.
+ *   2. Every file under `assetsDir`, RECURSIVELY (Vite's `assets/[ext]/[name]-[hash][extname]`
+ *      layout nests by extension), carries a content hash (matches `hashPattern`).
+ *   3. No rule in `headersFile` grants `immutable` to a path outside `immutablePrefixes`, matched
+ *      at a path BOUNDARY (`/assets` must not also authorise `/assets2` or `/assets-legacy`).
  *   4. No rule matches one of `htmlPatterns` — HTML must stay revalidated or deploys never surface.
  *
  * Check 3 is safety-critical (design §3.1): `immutable` on an unhashed path is cache poisoning —
  * the file changes, the URL does not, and clients hold a stale copy for up to a year. FAIL CLOSED:
- * an unrecognised or unparseable rule is a problem, never a pass.
+ * an unrecognised or unparseable rule is a problem, never a pass. A prefix test without a boundary
+ * check is the same bug class OWASP flags for Origin-header validation (`example.org.attacker.com`
+ * passing a naive `startsWith` test) — fixed here by requiring the matched prefix be followed by
+ * either nothing or a `/`, never by another path-segment character.
  *
  * Anti-vacuity, per plan §2 constraint 4 ("fail closed... never a silent pass"): a readable
  * `assetsDir` with 0 files, or a `headersFile` that parses to 0 rules, means nothing was actually
  * examined. Both report `empty-input` rather than the vacuous `ok: true` an empty build would
- * otherwise produce.
+ * otherwise produce. An UNREADABLE `assetsDir` or `headersFile` (missing, a directory where a file
+ * was expected, a permissions error, a TOCTOU race between `existsSync` and the read) is a
+ * DIFFERENT fact from "empty" and gets its own kind, so a consumer aggregating by kind is not told
+ * "1 unhashed asset" when the truth is "the assets directory could not be read at all".
  *
  * Deliberately does NOT: read `sharp` or any native binary (ruling 6.3), touch the DOM, or author a
- * `_headers` file — it only measures one a consumer already built.
+ * `_headers` file — it only measures one a consumer already built. Reuses `../image/check/walk.ts`'s
+ * `walkFiles` for the recursive directory scan rather than writing a second walker (project CLAUDE.md's
+ * "3+ occurrences: MUST refactor" rule, applied in reverse — don't create occurrence #1 of a new one).
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { relative } from 'node:path';
+import { walkFiles } from '../image/check/walk.ts';
 
 export type HeadersProblemKind =
   | 'missing-headers-file'
+  | 'unreadable-headers-file'
+  | 'unreadable-assets-dir'
   | 'empty-input'
   | 'unhashed-asset'
   | 'unauthorized-immutable'
@@ -102,12 +116,17 @@ function checkAssetsHashed(
 ): void {
   let assetFiles: string[];
   try {
-    assetFiles = readdirSync(assetsDir);
+    // Recursive: Vite's documented `assetFileNames: 'assets/[ext]/[name]-[hash][extname]'` layout
+    // nests by extension. A non-recursive `readdirSync` would test the SUBDIRECTORY NAME (e.g.
+    // "fonts") against `hashPattern` instead of the files inside it — reporting a nonsense problem
+    // while the real unhashed file underneath goes unexamined. `onReaddirError: 'throw'` (the
+    // default) is what we want here: propagate so the outer catch reports `unreadable-assets-dir`.
+    assetFiles = walkFiles(assetsDir).map((abs) => relative(assetsDir, abs));
   } catch {
-    // Fail closed: an unreadable assets dir is a problem, not a vacuous pass — there is nothing to
-    // confirm every file is hashed, so the check cannot claim it passed.
+    // Fail closed: an unreadable/missing assets dir is a DIFFERENT fact from "0 files found" — a
+    // consumer aggregating by kind must not read this as "1 unhashed asset".
     problems.push({
-      kind: 'unhashed-asset',
+      kind: 'unreadable-assets-dir',
       path: assetsDir,
       detail: `could not read "${assetsDir}" — did the build run?`,
     });
@@ -129,16 +148,34 @@ function checkAssetsHashed(
     return;
   }
 
-  const unhashed = assetFiles.filter((name) => !hashPattern.test(name));
-  for (const name of unhashed) {
+  // Matched against the FILENAME only (not the nested relative path) — the hash pattern describes
+  // one path segment (`<name>-<hash>.<ext>`), and a directory component like `fonts/` must never
+  // participate in the hash test.
+  const unhashed = assetFiles.filter(
+    (relPath) => !hashPattern.test(relPath.split('/').pop() ?? relPath),
+  );
+  for (const relPath of unhashed) {
     problems.push({
       kind: 'unhashed-asset',
-      path: `${assetsDir}/${name}`,
+      path: `${assetsDir}/${relPath}`,
       detail:
-        `"${name}" under "${assetsDir}" does not carry a content hash — an immutable rule on ` +
-        'this directory would cache it forever with no way to bust the cache.',
+        `"${relPath}" under "${assetsDir}" does not carry a content hash — an immutable rule ` +
+        'covering this path would cache it forever with no way to bust the cache.',
     });
   }
+}
+
+/**
+ * Boundary-aware prefix match: `path` is authorised by `prefix` only if it EQUALS `prefix` or
+ * continues immediately with `/`. A bare `startsWith` lets `/assets` authorise `/assets2/evil.js`
+ * or `/assets-legacy/*` — the same bug class OWASP flags for Origin-header checks
+ * (`example.org.attacker.com` passing a naive prefix test). No trailing slash is required on
+ * `prefix` itself: `/assets` and `/assets/` behave identically here, so the option's type does not
+ * need to forbid the unsafe-looking shape to also be safe.
+ */
+function isUnderPrefix(path: string, prefix: string): boolean {
+  const boundary = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+  return path === boundary || path.startsWith(`${boundary}/`);
 }
 
 function checkRule(
@@ -148,7 +185,7 @@ function checkRule(
   problems: HeadersProblem[],
 ): void {
   const grantsImmutable = rule.lines.some((line) => /immutable/i.test(line));
-  if (grantsImmutable && !immutablePrefixes.some((prefix) => rule.path.startsWith(prefix))) {
+  if (grantsImmutable && !immutablePrefixes.some((prefix) => isUnderPrefix(rule.path, prefix))) {
     problems.push({
       kind: 'unauthorized-immutable',
       path: rule.path,
@@ -191,7 +228,21 @@ export function verifyHeaders(options: VerifyHeadersOptions): VerifyHeadersResul
 
   checkAssetsHashed(assetsDir, hashPattern, problems);
 
-  const contents = readFileSync(headersFile, 'utf8');
+  // `existsSync` above only proves something was there at that instant — it returns true for a
+  // directory, and there is a TOCTOU window between the check and this read. Guarded independently
+  // so an unreadable path is a reported problem, never an uncaught throw breaking this function's
+  // pure `{ ok, problems }` contract.
+  let contents: string;
+  try {
+    contents = readFileSync(headersFile, 'utf8');
+  } catch (error) {
+    problems.push({
+      kind: 'unreadable-headers-file',
+      path: headersFile,
+      detail: `could not read "${headersFile}": ${String(error)}`,
+    });
+    return { ok: false, problems };
+  }
   const rules = parseHeaderRules(contents);
 
   if (rules.length === 0) {

@@ -127,7 +127,15 @@ describe('verifyFontChain', () => {
     ]);
   });
 
-  it('does not infinite-loop on a circular @import graph', () => {
+  it('terminates on a circular @import graph with exactly the one real finding — not by tripping the stack limit', () => {
+    // PR #4 review finding: the old assertions here (`ok === false`, "some problem is deep-font")
+    // held even with the cycle guard DELETED, because an unbounded recursive walk overflowed the
+    // stack and the old generic `catch` in readStylesheet reported that RangeError as a plausible
+    // "unreadable stylesheet" — a different problem shape that still made `ok === false`. This
+    // version pins the EXACT problem list the guard guarantees: one `deep-font` (b.css's font,
+    // reached at depth 1) and nothing else — no `unreadable-stylesheet`, no pile of duplicates from
+    // walking the cycle repeatedly. That exact shape is unreachable via the stack-overflow path,
+    // so it can only pass if the guard is actually doing its job.
     const aPath = join(root, 'a.css');
     const bPath = join(root, 'b.css');
     writeFileSync(aPath, `@import "./b.css";`);
@@ -141,9 +149,10 @@ describe('verifyFontChain', () => {
       resolveImport: resolverFor({ './a.css': aPath, './b.css': bPath }),
     });
 
-    // Terminates (the test itself would hang otherwise) and still finds the font behind the cycle.
     expect(result.ok).toBe(false);
-    expect(result.problems.some((p) => p.kind === 'deep-font')).toBe(true);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'deep-font', chain: [aPath, './b.css'] }),
+    ]);
   });
 
   it('honours a non-zero maxChainDepth, allowing a font one level deep', () => {
@@ -160,5 +169,79 @@ describe('verifyFontChain', () => {
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  it('reports empty-input rather than a vacuous pass when entryStylesheets is empty', () => {
+    const result = verifyFontChain({ entryStylesheets: [], resolveImport: resolverFor({}) });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([expect.objectContaining({ kind: 'empty-input' })]);
+  });
+
+  it('reports the MINIMUM discovery depth, not whichever @import order the walk happens to see first', () => {
+    // entry imports a.css THEN c.css. a.css also imports c.css. c.css carries the font.
+    // c.css's true minimum depth is 1 (entry -> c.css directly) even though a DFS following
+    // import statements in file order would reach it via entry -> a.css -> c.css at depth 2 first.
+    const c = write('c.css', `@font-face { font-family: 'X'; src: url('/c.woff2'); }`);
+    const a = write('a-order.css', `@import "./c.css";`);
+    const entry = write('entry-order.css', `@import "./a-order.css"; @import "./c.css";`);
+
+    const result = verifyFontChain({
+      entryStylesheets: [entry],
+      resolveImport: resolverFor({ './a-order.css': a, './c.css': c }),
+      maxChainDepth: 1,
+    });
+
+    // c.css is reachable at depth 1 (within budget), so this must be clean — not a false
+    // deep-font positive caused by the depth-2 path through a.css.
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  it('reports resolver-error, distinct from unresolvable-import, when resolveImport throws', () => {
+    const entry = write('entry-throws.css', `@import "./boom.css";`);
+    const boom = new Error('resolver blew up');
+
+    const result = verifyFontChain({
+      entryStylesheets: [entry],
+      resolveImport: () => {
+        throw boom;
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'resolver-error');
+    expect(problem).toBeDefined();
+    expect(problem?.subject).toBe('./boom.css');
+    expect(problem?.message).toContain('resolver blew up');
+    expect(result.problems.some((p) => p.kind === 'unresolvable-import')).toBe(false);
+  });
+
+  it('reports unparseable-font-face for a truncated @font-face block instead of dropping it silently', () => {
+    const entry = write(
+      'truncated.css',
+      `@font-face { font-family: 'Broken'; src: url('/broken.woff2');`, // no closing brace
+    );
+
+    const result = verifyFontChain({
+      entryStylesheets: [entry],
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'unparseable-font-face', subject: entry }),
+    ]);
+  });
+
+  it('ships chain = [entry] (never an empty array) when the entry stylesheet itself is unreadable', () => {
+    const missing = join(root, 'gone.css');
+
+    const result = verifyFontChain({
+      entryStylesheets: [missing],
+      resolveImport: resolverFor({}),
+    });
+
+    const problem = result.problems.find((p) => p.kind === 'unreadable-stylesheet');
+    expect(problem?.chain).toEqual([missing]);
   });
 });

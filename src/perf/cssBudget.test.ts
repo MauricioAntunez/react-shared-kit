@@ -132,4 +132,96 @@ describe('verifyCssBudget', () => {
     });
     expect(brotli).toEqual({ ok: true, problems: [] });
   });
+
+  it('passes clean when render-blocking CSS exactly equals maxBytes (boundary, PR #4 IMPORTANT 4)', () => {
+    write('main.css', 'x'.repeat(500));
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+
+    const result = verifyCssBudget({ htmlFiles: [html], resolveHref, maxBytes: 500 });
+
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  it('reports empty-input for an empty htmlFiles list instead of a vacuous pass (PR #4 MUST-FIX 2)', () => {
+    const result = verifyCssBudget({ htmlFiles: [], resolveHref, maxBytes: 1_000_000 });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([expect.objectContaining({ kind: 'empty-input' })]);
+  });
+
+  it(
+    'reports unreadable-html for a missing HTML file WITHOUT throwing and WITHOUT losing an ' +
+      'over-budget finding already collected for another document in the same batch ' +
+      "(PR #4 MUST-FIX 1, the reviewer's exact reproduction)",
+    () => {
+      write('main.css', 'x'.repeat(10_000));
+      const overBudgetHtml = write(
+        'over-budget.html',
+        '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+      );
+      const missingHtml = join(root, 'does-not-exist.html'); // never written
+
+      let result: ReturnType<typeof verifyCssBudget> | undefined;
+      expect(() => {
+        result = verifyCssBudget({
+          htmlFiles: [overBudgetHtml, missingHtml],
+          resolveHref,
+          maxBytes: 10,
+        });
+      }).not.toThrow();
+
+      expect(result?.ok).toBe(false);
+      expect(result?.problems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'over-budget', html: overBudgetHtml }),
+          expect.objectContaining({ kind: 'unreadable-html', html: missingHtml }),
+        ]),
+      );
+      expect(result?.problems).toHaveLength(2);
+    },
+  );
+
+  it('reports unreadable-file when resolveHref names a path that does not exist on disk (PR #4 MUST-FIX 1)', () => {
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/ghost.css"></head></html>',
+    );
+    const ghostPath = join(root, 'ghost.css'); // never written
+    const resolveToGhost = () => ghostPath;
+
+    const result = verifyCssBudget({
+      htmlFiles: [html],
+      resolveHref: resolveToGhost,
+      maxBytes: 1_000_000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'unreadable-file', file: ghostPath, href: '/ghost.css' }),
+    ]);
+  });
+
+  it('reports resolver-threw, distinct from unresolvable-href, when resolveHref itself throws (PR #4 IMPORTANT 3)', () => {
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+    const throwingResolver = () => {
+      throw new Error('boom: unguarded statSync inside consumer code');
+    };
+
+    const result = verifyCssBudget({
+      htmlFiles: [html],
+      resolveHref: throwingResolver,
+      maxBytes: 1_000_000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'resolver-threw', href: '/main.css' }),
+    ]);
+  });
 });

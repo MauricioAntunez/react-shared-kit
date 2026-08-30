@@ -210,6 +210,142 @@ describe('verifyHeaders', () => {
     );
   });
 
+  // --- MUST-FIX 1: assetsDir must be walked recursively -------------------------------------
+
+  it('RED: fires unhashed-asset naming a nested unhashed file, not the directory entry', () => {
+    // Reviewer repro: Vite's `assets/[ext]/[name]-[hash][extname]` layout nests by extension. A
+    // non-recursive scan tests the DIRECTORY NAME ("fonts") against the hash pattern instead of
+    // the real file inside it — reporting a nonsense problem while the actual risk passes clean.
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    mkdirSync(join(assetsDir, 'fonts'), { recursive: true });
+    writeFileSync(join(assetsDir, 'fonts', 'unhashed-font.woff2'), BYTES);
+    writeFileSync(
+      headersFile,
+      ['/assets/*', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets/'] });
+    expect(result.ok).toBe(false);
+    // The problem must name the real file, not the "fonts" directory entry.
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'unhashed-asset' && p.path.endsWith('fonts/unhashed-font.woff2'),
+      ),
+    ).toBe(true);
+    expect(
+      result.problems.some((p) => p.path.endsWith('/fonts') && p.kind === 'unhashed-asset'),
+    ).toBe(false);
+  });
+
+  it('GREEN: a nested asset that IS hashed does not fire unhashed-asset', () => {
+    writeCleanFixture();
+    mkdirSync(join(assetsDir, 'fonts'), { recursive: true });
+    writeFileSync(join(assetsDir, 'fonts', 'font-a1B2c3D4.woff2'), BYTES);
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets/'] });
+    expect(result.problems.some((p) => p.kind === 'unhashed-asset')).toBe(false);
+  });
+
+  // --- MUST-FIX 2: immutablePrefixes must be boundary-matched, not a bare startsWith ---------
+
+  it('RED: fires unauthorized-immutable for a sibling-path collision (/assets2 vs /assets)', () => {
+    // Reviewer repro #1: with immutablePrefixes: ['/assets'] (no trailing slash — nothing requires
+    // one), a bare startsWith lets a wholly different path share the prefix as a string.
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    writeFileSync(
+      headersFile,
+      [
+        '/assets/*',
+        '  Cache-Control: public, max-age=31536000, immutable',
+        '',
+        '/assets2/evil.js',
+        '  Cache-Control: public, max-age=31536000, immutable',
+        '',
+      ].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets'] });
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'unauthorized-immutable' && p.path === '/assets2/evil.js',
+      ),
+    ).toBe(true);
+  });
+
+  it('RED: fires unauthorized-immutable for a sibling-path collision (/assets-legacy/* vs /assets)', () => {
+    // Reviewer repro #2: same class, a hyphenated sibling directory.
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    writeFileSync(
+      headersFile,
+      [
+        '/assets/*',
+        '  Cache-Control: public, max-age=31536000, immutable',
+        '',
+        '/assets-legacy/*',
+        '  Cache-Control: public, max-age=31536000, immutable',
+        '',
+      ].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets'] });
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'unauthorized-immutable' && p.path === '/assets-legacy/*',
+      ),
+    ).toBe(true);
+  });
+
+  it('GREEN: a boundary-less prefix ("/assets") still authorises its own subtree', () => {
+    // Proves the fix does not overcorrect into rejecting the legitimate case.
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    writeFileSync(
+      headersFile,
+      ['/assets/*', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets'] });
+    expect(result.problems.some((p) => p.kind === 'unauthorized-immutable')).toBe(false);
+  });
+
+  // --- MUST-FIX 3 / IMPORTANT 4 / IMPORTANT 5: unreadable inputs must be reported, not thrown -
+
+  it('RED: reports unreadable-headers-file instead of throwing when headersFile is a directory', () => {
+    // Reproduces the TOCTOU/EISDIR case: existsSync is true for a directory, so the unguarded
+    // readFileSync used to throw EISDIR straight out of this "pure" function.
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    mkdirSync(headersFile);
+    let threw = false;
+    let result: ReturnType<typeof verifyHeaders> | undefined;
+    try {
+      result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets/'] });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    expect(result?.ok).toBe(false);
+    expect(result?.problems.some((p) => p.kind === 'unreadable-headers-file')).toBe(true);
+  });
+
+  it('RED: fires unreadable-assets-dir (not unhashed-asset) when assetsDir does not exist', () => {
+    // IMPORTANT 4: assetsDir is always created in beforeEach across every other test, so this path
+    // was untested — gutting the catch body left all other tests green.
+    // IMPORTANT 5: must carry its OWN kind, distinct from unhashed-asset, so a consumer
+    // aggregating by kind is told "the directory is unreadable", not "1 unhashed file".
+    rmSync(assetsDir, { recursive: true, force: true });
+    writeFileSync(
+      headersFile,
+      ['/assets/*', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets/'] });
+    expect(result.ok).toBe(false);
+    expect(result.problems.some((p) => p.kind === 'unreadable-assets-dir')).toBe(true);
+    expect(result.problems.some((p) => p.kind === 'unhashed-asset')).toBe(false);
+  });
+
+  it('GREEN: neither unreadable-assets-dir nor unreadable-headers-file fires on the clean fixture', () => {
+    writeCleanFixture();
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets/'] });
+    expect(result.problems.some((p) => p.kind === 'unreadable-assets-dir')).toBe(false);
+    expect(result.problems.some((p) => p.kind === 'unreadable-headers-file')).toBe(false);
+  });
+
   it('respects a custom hashPattern', () => {
     // A non-Vite bundler's hash shape: 12 lowercase hex chars in brackets.
     writeFileSync(join(assetsDir, 'app.[deadbeefcafe].js'), BYTES);

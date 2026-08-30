@@ -14,6 +14,23 @@ import { brotliCompressSync } from 'node:zlib';
  * `href="/assets/graph-DswA4CsK.css#"` — a literal trailing `#` that resolves to nothing. A gate
  * that silently skipped unresolvable hrefs would have reported a clean 0-byte budget on that
  * broken build. Fail closed.
+ *
+ * FAIL CLOSED extends to every I/O boundary, not just the resolver's `undefined` return, per PR #4
+ * review: an unguarded `readFileSync` — of a built HTML file, or of a stylesheet a resolver named —
+ * throws `ENOENT` uncaught, and because the main loop had no per-iteration isolation, one missing
+ * file used to abort the whole function and DISCARD every problem already collected for earlier
+ * documents (a genuinely over-budget document silently lost because an unrelated HTML file in the
+ * same batch was missing). Every read and every call into a consumer-supplied callback
+ * (`resolveHref` can throw, not just return `undefined`) is now try/caught per item, turned into a
+ * problem, and the loop continues — `verifyCssBudget` never throws.
+ *
+ * An empty `htmlFiles` array is `empty-input` (plan §2 constraint 4: fail closed, never a vacuous
+ * `ok: true`) — a wrong output dir, a skipped SSG step, or a typo'd glob would otherwise score a
+ * clean scorecard for having examined nothing. An individual HTML file with zero
+ * `<link rel="stylesheet">` tags is NOT flagged: unlike an empty file LIST (a batch-level signal
+ * that the run itself is misconfigured), a single stylesheet-free document is an ordinary, legal
+ * page — flagging it would fire on every fragment or stylesheet-free route a consumer legitimately
+ * ships, which `empty-input` at the batch level does not.
  */
 
 /** Reads one attribute's raw string value off a tag's source text. */
@@ -67,10 +84,20 @@ function extractStylesheetLinks(html: string): StylesheetLink[] {
   return links;
 }
 
-export type CssBudgetProblemKind = 'unresolvable-href' | 'over-budget';
+export type CssBudgetProblemKind =
+  | 'empty-input'
+  | 'unreadable-html'
+  | 'resolver-threw'
+  | 'unresolvable-href'
+  | 'unreadable-file'
+  | 'over-budget';
 
 export type CssBudgetProblem =
+  | { kind: 'empty-input'; detail: string }
+  | { kind: 'unreadable-html'; html: string; detail: string }
+  | { kind: 'resolver-threw'; html: string; href: string; detail: string }
   | { kind: 'unresolvable-href'; html: string; href: string; detail: string }
+  | { kind: 'unreadable-file'; html: string; href: string; file: string; detail: string }
   | { kind: 'over-budget'; html: string; bytes: number; maxBytes: number; detail: string };
 
 export interface VerifyCssBudgetOptions {
@@ -97,10 +124,50 @@ function measuredSize(file: string, measure: 'raw' | 'brotli'): number {
 }
 
 /**
+ * Resolves one render-blocking link's href, guarding the consumer-supplied `resolveHref` callback
+ * itself: a resolver that THROWS (an unguarded `statSync` inside the consumer's own code, say) is
+ * a distinct failure from a resolver that returns `undefined` — the caller needs to tell "the
+ * resolver crashed" apart from "the resolver looked and found nothing", so each gets its own
+ * problem kind. Returns `undefined` in both failure cases; the pushed problem is what disambiguates.
+ */
+function resolveLink(
+  html: string,
+  href: string,
+  resolveHref: (href: string) => string | undefined,
+  problems: CssBudgetProblem[],
+): string | undefined {
+  let file: string | undefined;
+  try {
+    file = resolveHref(href);
+  } catch (error) {
+    problems.push({
+      kind: 'resolver-threw',
+      html,
+      href,
+      detail: `resolveHref threw while resolving "${href}": ${String(error)}`,
+    });
+    return undefined;
+  }
+  if (file === undefined) {
+    problems.push({
+      kind: 'unresolvable-href',
+      html,
+      href,
+      detail: `render-blocking stylesheet href "${href}" did not resolve to a file`,
+    });
+  }
+  return file;
+}
+
+/**
  * Sums the resolved render-blocking stylesheets for ONE document and reports its problems.
  * Unresolvable hrefs are reported unconditionally (fail closed) and excluded from the byte sum —
  * there is nothing measurable to add — so a build that emits garbage hrefs can never coast to a
  * clean budget verdict by having nothing left to count.
+ *
+ * Every read is guarded (PR #4 MUST-FIX 1): a resolved path that does not actually exist on disk
+ * — the resolver named a file, but it never got written — reports `unreadable-file` and is
+ * excluded from the sum, rather than throwing `ENOENT` out of the whole gate.
  */
 function checkDocument(
   html: string,
@@ -114,17 +181,20 @@ function checkDocument(
 
   for (const link of links) {
     if (!link.renderBlocking) continue;
-    const file = resolveHref(link.href);
-    if (file === undefined) {
+    const file = resolveLink(html, link.href, resolveHref, problems);
+    if (file === undefined) continue;
+
+    try {
+      bytes += measuredSize(file, measure);
+    } catch (error) {
       problems.push({
-        kind: 'unresolvable-href',
+        kind: 'unreadable-file',
         html,
         href: link.href,
-        detail: `render-blocking stylesheet href "${link.href}" did not resolve to a file`,
+        file,
+        detail: `could not read resolved stylesheet "${file}" for href "${link.href}": ${String(error)}`,
       });
-      continue;
     }
-    bytes += measuredSize(file, measure);
   }
 
   if (bytes > maxBytes) {
@@ -144,8 +214,29 @@ export function verifyCssBudget(options: VerifyCssBudgetOptions): VerifyCssBudge
   const { htmlFiles, resolveHref, maxBytes, measure = 'raw' } = options;
   const problems: CssBudgetProblem[] = [];
 
+  // Fail closed (plan §2 constraint 4): nothing to examine must never read as a clean pass.
+  if (htmlFiles.length === 0) {
+    problems.push({
+      kind: 'empty-input',
+      detail: 'htmlFiles is empty — nothing was examined; did the build run or the glob resolve?',
+    });
+    return { ok: false, problems };
+  }
+
   for (const htmlFile of htmlFiles) {
-    const html = readFileSync(htmlFile, 'utf8');
+    let html: string;
+    try {
+      html = readFileSync(htmlFile, 'utf8');
+    } catch (error) {
+      // A missing/unreadable HTML file must not abort the loop: doing so would throw away every
+      // problem already collected for documents already checked (PR #4 MUST-FIX 1).
+      problems.push({
+        kind: 'unreadable-html',
+        html: htmlFile,
+        detail: `could not read "${htmlFile}": ${String(error)}`,
+      });
+      continue;
+    }
     const links = extractStylesheetLinks(html);
     problems.push(...checkDocument(htmlFile, links, resolveHref, maxBytes, measure));
   }
