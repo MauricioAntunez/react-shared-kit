@@ -233,6 +233,62 @@ describe('verifyFontChain', () => {
     ]);
   });
 
+  it('reports unparseable-font-face with the RESOLVED file path, not the @import specifier, under a renaming resolver at depth > 0', () => {
+    // Round 2 review finding: the only prior test for this kind put the truncated block in the
+    // ENTRY sheet, where `chain[chain.length - 1]` (the specifier "as written") coincidentally
+    // equals the resolved path. This is the module doc's own motivating scenario — a resolver that
+    // does NOT return the specifier verbatim, which is how every real bundler resolver behaves
+    // (alias/package resolution) — and it is one @import hop deep, so `chain.length > 1`.
+    const nestedRealFile = write(
+      'nested-real-file.css',
+      `@font-face { font-family: 'Broken'; src: url('/broken.woff2');`, // no closing brace
+    );
+    const entry = write('entry-renamed.css', `@import "nested-specifier.css";`);
+
+    const result = verifyFontChain({
+      entryStylesheets: [entry],
+      resolveImport: resolverFor({ 'nested-specifier.css': nestedRealFile }),
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'unparseable-font-face');
+    expect(problem).toBeDefined();
+    // The reported subject must be the file that actually holds the malformed block — opening
+    // the raw specifier "nested-specifier.css" would find nothing, since it never exists on disk.
+    expect(problem?.subject).toBe(nestedRealFile);
+    expect(problem?.subject).not.toBe('nested-specifier.css');
+    expect(problem?.message).toContain(nestedRealFile);
+  });
+
+  it('reports the TRUE MINIMUM depth across a 3-level graph, not whichever path the queue order visits first', () => {
+    // Round 2 review finding: the prior min-depth test only covered two paths that are both
+    // direct children of the entry, resolved inside one synchronous loop before queue order (BFS
+    // vs. a `pop()`-based LIFO mutation) could ever matter — a `shift()` -> `pop()` regression
+    // slipped through it undetected. This fixture forces the queue to actually order across
+    // levels: entry imports p.css THEN m.css; p.css imports shared.css directly (true depth 2);
+    // m.css imports n.css, which imports shared.css (depth 3 via the longer path). With correct
+    // FIFO/BFS, shared.css is marked visited at depth 2 (via p.css, processed first) and the
+    // later, longer arrival via n.css is skipped — so it passes at maxChainDepth: 2.
+    const shared = write('shared.css', `@font-face { font-family: 'S'; src: url('/s.woff2'); }`);
+    const p = write('p.css', `@import "./shared.css";`);
+    const n = write('n.css', `@import "./shared.css";`);
+    const m = write('m.css', `@import "./n.css";`);
+    const entry = write('entry-3level.css', `@import "./p.css"; @import "./m.css";`);
+
+    const result = verifyFontChain({
+      entryStylesheets: [entry],
+      resolveImport: resolverFor({
+        './p.css': p,
+        './m.css': m,
+        './n.css': n,
+        './shared.css': shared,
+      }),
+      maxChainDepth: 2,
+    });
+
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
   it('ships chain = [entry] (never an empty array) when the entry stylesheet itself is unreadable', () => {
     const missing = join(root, 'gone.css');
 
@@ -243,5 +299,29 @@ describe('verifyFontChain', () => {
 
     const problem = result.problems.find((p) => p.kind === 'unreadable-stylesheet');
     expect(problem?.chain).toEqual([missing]);
+  });
+
+  it('propagates a resolver-contract violation instead of misreporting it as unreadable-stylesheet', () => {
+    // Round 2 review finding: a `resolveImport` that violates its declared `string | undefined`
+    // contract (returns some other value, e.g. a plain object) makes the internal `readFileSync`
+    // throw Node's own `TypeError [ERR_INVALID_ARG_TYPE]`. That error ALSO carries a string
+    // `.code`, so the naive fs-error predicate misreported it as `unreadable-stylesheet` — the
+    // exact "a control-flow catastrophe must never look like a missing file" failure this
+    // discriminator exists to prevent, just triggered by a caller bug instead of a stack overflow.
+    // It must propagate as an uncaught error instead.
+    const entry = write('entry-contract-violation.css', `@import "./whatever.css";`);
+    let caught: unknown;
+    try {
+      verifyFontChain({
+        entryStylesheets: [entry],
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
+        resolveImport: (() => ({ notAPath: true })) as any,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as NodeJS.ErrnoException).code).toBe('ERR_INVALID_ARG_TYPE');
   });
 });

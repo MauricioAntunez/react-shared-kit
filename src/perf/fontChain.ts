@@ -65,9 +65,10 @@ export interface FontChainProblem {
    * precedes any walk. */
   entry: string;
   /** The font `src` URL (for `deep-font`), the `@import` specifier (for `unresolvable-import` and
-   * `resolver-error`), or the stylesheet path (for `unreadable-stylesheet` and
-   * `unparseable-font-face`) that this problem is about. `entryStylesheets` itself, stringified,
-   * for `empty-input`. */
+   * `resolver-error`), or the RESOLVED stylesheet path (for `unreadable-stylesheet` and
+   * `unparseable-font-face` — never the `@import` specifier that led there, so a consumer can open
+   * the exact file to fix). The literal string `'(entryStylesheets)'` for `empty-input`, which has
+   * no single file to point at. */
   subject: string;
   /** Import chain from the entry sheet down to where the font/import/defect actually lives, as
    * specifiers, with the entry path as `chain[0]`. Always includes at least the entry — even an
@@ -168,10 +169,24 @@ function scanFontFaces(css: string): FontFaceScanResult {
   return { urls, unterminatedBlocks };
 }
 
-/** Node's `fs` errors (`ENOENT`, `EACCES`, ...) all carry a string `.code`. Used to tell a real
- * filesystem failure apart from an unrelated thrown error — see `readStylesheet`. */
+/**
+ * Node's `fs` errors (`ENOENT`, `EACCES`, `EISDIR`, `ENAMETOOLONG`, `ELOOP`, ...) all carry a
+ * POSIX-style string `.code`. Used to tell a real filesystem failure apart from an unrelated
+ * thrown error — see `readStylesheet`.
+ *
+ * Node's own internal validation errors (`TypeError [ERR_INVALID_ARG_TYPE]`, thrown by
+ * `readFileSync` itself when handed a non-string path) ALSO carry a string `.code` — one starting
+ * `ERR_`. Round 2 review finding: without excluding that prefix, a `resolveImport` that violates
+ * its declared `string | undefined` contract (returns some other value) makes `readFileSync`
+ * throw `ERR_INVALID_ARG_TYPE`, which this predicate then misreports as `unreadable-stylesheet`
+ * — exactly the "a control-flow catastrophe must never look like a missing file" failure this
+ * predicate exists to prevent, just from a different kind of caller bug. Excluding `ERR_*` loses
+ * nothing: no real POSIX fs error code uses that prefix.
+ */
 function isFsError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string';
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === 'string' && !code.startsWith('ERR_');
 }
 
 interface WalkState {
@@ -263,21 +278,33 @@ interface QueueItem {
 /** Reports every `@font-face` src found in `css` at `depth`: `deep-font` when beyond
  * `maxChainDepth`, silently within budget otherwise (that is the clean case this gate exists to
  * pass). Truncated blocks are reported unconditionally, regardless of depth — that defect is
- * structural, not a discovery-latency finding. */
-function reportFontFaces(state: WalkState, css: string, depth: number, chain: string[]): void {
+ * structural, not a discovery-latency finding.
+ *
+ * `path` is the RESOLVED file `css` was read from, threaded through separately from `chain`
+ * (whose last element is the `@import` specifier as written, not the file it resolved to) — round
+ * 2 review finding: `unparseable-font-face` previously reported `chain[chain.length - 1]`, the
+ * specifier, which does not exist on disk under a resolver that renames (alias/package
+ * resolution never returns the specifier verbatim). Only `path` points at a file a consumer can
+ * actually open. */
+function reportFontFaces(
+  state: WalkState,
+  css: string,
+  path: string,
+  depth: number,
+  chain: string[],
+): void {
   const { urls, unterminatedBlocks } = scanFontFaces(css);
 
   if (unterminatedBlocks > 0) {
     state.problems.push({
       kind: 'unparseable-font-face',
       entry: state.entryLabel,
-      subject: chain[chain.length - 1] ?? state.entryLabel,
+      subject: path,
       chain,
       message:
-        `${unterminatedBlocks} @font-face block(s) in "${chain[chain.length - 1]}" ` +
-        '(chain: ' +
-        `${chain.join(' -> ')}) have no closing "}" and could not be parsed. A malformed build ` +
-        'artifact is being reported rather than silently skipped.',
+        `${unterminatedBlocks} @font-face block(s) in "${path}" (chain: ${chain.join(' -> ')}) ` +
+        'have no closing "}" and could not be parsed. A malformed build artifact is being ' +
+        'reported rather than silently skipped.',
     });
   }
 
@@ -314,7 +341,7 @@ function walk(state: WalkState, entryPath: string): void {
     const { path, depth, chain } = item;
     const css = readStylesheet(state, path, chain);
     if (css !== undefined) {
-      reportFontFaces(state, css, depth, chain);
+      reportFontFaces(state, css, path, depth, chain);
 
       for (const specifier of extractImportSpecifiers(css)) {
         const nextChain = [...chain, specifier];

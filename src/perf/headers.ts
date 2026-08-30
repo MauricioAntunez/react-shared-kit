@@ -46,6 +46,7 @@ export type HeadersProblemKind =
   | 'unreadable-assets-dir'
   | 'empty-input'
   | 'unhashed-asset'
+  | 'invalid-immutable-prefix'
   | 'unauthorized-immutable'
   | 'html-rule';
 
@@ -178,6 +179,18 @@ function isUnderPrefix(path: string, prefix: string): boolean {
   return path === boundary || path.startsWith(`${boundary}/`);
 }
 
+/**
+ * `''` and `'/'` are not scoping prefixes at all — every boundary in `isUnderPrefix` collapses to
+ * the empty string, so `startsWith('')` is trivially true for any absolute rule path and every
+ * `immutable` rule (including one on an unhashed path) would pass. This is the exact
+ * cache-poisoning shape check 3 exists to stop, so an entry this broad is refused outright rather
+ * than silently authorising everything OR silently being dropped without telling the caller — both
+ * of those would still leave a config that looks accepted but is not doing what was intended.
+ */
+function isTooBroadPrefix(prefix: string): boolean {
+  return prefix === '' || prefix === '/';
+}
+
 function checkRule(
   rule: HeaderRule,
   immutablePrefixes: readonly string[],
@@ -245,6 +258,23 @@ export function verifyHeaders(options: VerifyHeadersOptions): VerifyHeadersResul
   }
   const rules = parseHeaderRules(contents);
 
+  // Fail closed on the option itself (round-2 review, MUST-FIX 1): an empty or root prefix
+  // authorises every path once it reaches `isUnderPrefix`, defeating check 3 entirely. Reported
+  // once per offending entry, then EXCLUDED from the authorisation set below — never silently
+  // used, never silently dropped without telling the caller.
+  const validImmutablePrefixes = immutablePrefixes.filter((prefix) => !isTooBroadPrefix(prefix));
+  for (const prefix of immutablePrefixes) {
+    if (!isTooBroadPrefix(prefix)) continue;
+    problems.push({
+      kind: 'invalid-immutable-prefix',
+      path: prefix,
+      detail:
+        `immutablePrefixes entry "${prefix}" is empty or root — it would authorise "immutable" ` +
+        'on every path, including unhashed ones. Refusing to use it; pass a specific prefix ' +
+        'such as "/assets" instead.',
+    });
+  }
+
   if (rules.length === 0) {
     // Fail closed (plan §2 constraint 4): the file exists but parses to 0 rules — nothing was
     // verified. A truncated write, a build step that emitted an empty file, or a format this
@@ -259,7 +289,7 @@ export function verifyHeaders(options: VerifyHeadersOptions): VerifyHeadersResul
   }
 
   for (const rule of rules) {
-    checkRule(rule, immutablePrefixes, htmlPatterns, problems);
+    checkRule(rule, validImmutablePrefixes, htmlPatterns, problems);
   }
 
   return { ok: problems.length === 0, problems };

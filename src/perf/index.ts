@@ -15,6 +15,15 @@
  *   - Fail closed. An unreadable file, an unparseable rule or an unrecognised shape is a problem,
  *     never a silent pass.
  *
+ * ONE QUALIFICATION to "returns a result object", added after review: these gates return problems
+ * for every condition they are built to detect — missing files, unreadable input, malformed rules,
+ * vacuous input, a resolver that declines to resolve. They do NOT swallow a *programming* error.
+ * `verifyFontChain` deliberately re-throws anything that is not a filesystem failure, because the
+ * alternative is worse: a catch broad enough to absorb, say, a stack overflow would report it as
+ * "unreadable stylesheet", and a consumer would go looking for a missing file that exists. A bug in
+ * the kit or in a consumer's callback should surface as the loud crash it is. Fail closed means no
+ * silent pass; it does not mean pretend a defect is a finding.
+ *
  * SCOPE BOUNDARY, ruled by the user 2026-08-30: this module ships gates, never styles. No CSS, no
  * @font-face, no design tokens, no font files. The kit measures; the consuming project fixes. That
  * is what keeps a sixth module compatible with this package's charter ("no CSS, no design tokens")

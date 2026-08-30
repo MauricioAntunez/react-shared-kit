@@ -346,6 +346,63 @@ describe('verifyHeaders', () => {
     expect(result.problems.some((p) => p.kind === 'unreadable-headers-file')).toBe(false);
   });
 
+  // --- Round-2 MUST-FIX 1: an empty or root prefix must never authorise everything ----------
+
+  it('RED: fires invalid-immutable-prefix for a root prefix ("/") instead of authorising everything', () => {
+    // Reviewer repro: with immutablePrefixes: ['/'], the old boundary computed "" and every
+    // absolute path (including an unhashed one) satisfied startsWith('') — a clean ok:true while
+    // granting immutable to anything. '/' is not exotic — it is "assets served from site root".
+    writeFileSync(join(assetsDir, 'unhashed.js'), BYTES); // deliberately NOT hashed
+    writeFileSync(
+      headersFile,
+      ['/etc/passwd', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/'] });
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some((p) => p.kind === 'invalid-immutable-prefix' && p.path === '/'),
+    ).toBe(true);
+    // The invalid entry must not have silently authorised the rule either.
+    expect(
+      result.problems.some((p) => p.kind === 'unauthorized-immutable' && p.path === '/etc/passwd'),
+    ).toBe(true);
+  });
+
+  it('RED: fires invalid-immutable-prefix for an empty-string prefix, never a silent pass', () => {
+    // Reviewer repro #2: immutablePrefixes: [''] — same collapse, an empty string.
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    writeFileSync(
+      headersFile,
+      ['/anything/at/all', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: [''] });
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some((p) => p.kind === 'invalid-immutable-prefix' && p.path === ''),
+    ).toBe(true);
+  });
+
+  it('GREEN: invalid-immutable-prefix does not fire for a specific, non-root prefix', () => {
+    writeCleanFixture();
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets/'] });
+    expect(result.problems.some((p) => p.kind === 'invalid-immutable-prefix')).toBe(false);
+  });
+
+  // --- Round-2 IMPORTANT 2: the exact-match branch of isUnderPrefix needs its own test -------
+
+  it('GREEN: a rule path exactly equal to the prefix (no wildcard/subpath) is authorised', () => {
+    // A single bundled entry served at exactly "/assets" (no trailing "/*" or subpath) is unusual
+    // but legitimate. Removing the `path === boundary ||` disjunct in isUnderPrefix would flip
+    // this to a spurious unauthorized-immutable while every other test stays green.
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    writeFileSync(
+      headersFile,
+      ['/assets', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets'] });
+    expect(result.problems.some((p) => p.kind === 'unauthorized-immutable')).toBe(false);
+  });
+
   it('respects a custom hashPattern', () => {
     // A non-Vite bundler's hash shape: 12 lowercase hex chars in brackets.
     writeFileSync(join(assetsDir, 'app.[deadbeefcafe].js'), BYTES);
