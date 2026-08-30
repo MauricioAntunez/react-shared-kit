@@ -252,11 +252,25 @@ function attr(tag: string, name: string): string | undefined {
 }
 
 /** `<link rel="preload" as="font" crossorigin href="...">` URLs in `html`. All three of `rel`,
- * `as` and `crossorigin` are required — a preload missing `crossorigin` is a well-known footgun
- * that makes the browser fetch the font TWICE (once for the preload, once for the actual
- * font-relation request, since font fetches are always CORS-mode), so a preload without it is not
- * treated as satisfying the exemption. `crossorigin` is a boolean-ish attribute (bare or
- * `crossorigin="anonymous"` both count), unlike `rel`/`as`, which carry meaningful values. */
+ * `as` and `crossorigin` are required.
+ *
+ * A preload missing `crossorigin` makes the browser fetch the font TWICE, so it is NOT treated as
+ * satisfying the exemption — it is not a fix, it is a second download. MEASURED, not assumed:
+ * two identical same-origin pages, each with one `@font-face` and one preload for the same woff2,
+ * differing only in the attribute, counting `performance.getEntriesByType('resource')`:
+ *
+ *   without crossorigin -> 2 requests   (initiatorType 'link' AND 'css')
+ *   with    crossorigin -> 1 request    (initiatorType 'css', served from the preload)
+ *
+ * The mechanism is that a font is always fetched in CORS mode, so a no-cors preload lands in a
+ * different cache partition than the font-relation request that follows and cannot satisfy it.
+ * That mechanism is the standard explanation and it matches the observation, but note the
+ * OBSERVATION is the evidence here: a fanout across the project's KBs (MDN, chrome-developer,
+ * web.dev, the WHATWG HTML spec) returned nothing stating it, so it was settled by reproduction
+ * rather than by citation. Re-run the two-page probe before changing this behaviour.
+ *
+ * `crossorigin` is boolean-ish — bare or `crossorigin="anonymous"` both count — unlike `rel`/`as`,
+ * which carry meaningful values. */
 function extractPreloadFontUrls(html: string): Set<string> {
   const urls = new Set<string>();
   for (const match of html.matchAll(/<link\s[^>]*>/gi)) {
