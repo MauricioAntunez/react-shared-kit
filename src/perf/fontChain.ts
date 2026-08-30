@@ -1,31 +1,63 @@
 /**
- * `verifyFontChain` — walks the `@import` graph of each render-blocking stylesheet and reports
- * every `@font-face` `src` URL that is only reachable at a nested import depth, per design §3.3.
+ * `verifyFontChain` — enforces a hard rule: **a font file must never be imported via CSS.** Every
+ * `@font-face` reachable only through an external stylesheet — whether declared directly in a
+ * render-blocking sheet or behind a nested `@import` — is a defect, full stop, regardless of how
+ * many hops away it is. There is no acceptable depth other than zero.
  *
- * The defect: a font declared through `@import` inside a render-blocking stylesheet is not
- * discoverable until that stylesheet has downloaded AND PARSED. The browser's preload scanner
- * cannot see the woff2 URL until then, turning it into a critical request chain. In the
- * originating case, nine `@fontsource` `@import`s meant no font URL existed for the preload
- * scanner until the entry sheet was parsed.
+ * ROOT CAUSE OF A SHIPPED MISS (this file's prior version): depth was measured WITHIN the CSS
+ * graph, starting from the entry stylesheet — so a font declared directly in the entry sheet
+ * scored depth 0 and PASSED, six review rounds never questioning the quantity. That is the wrong
+ * frame of reference. The browser's preload scanner reads the DOCUMENT, not any CSS file: a font
+ * whose only declaration lives in a stylesheet is undiscoverable until that stylesheet has been
+ * fetched AND parsed, whether or not any `@import` is involved. Measured on the originating
+ * consumer: zero `@import`s, `@font-face` in the entry sheet, no preload — this gate used to
+ * report "no font declared behind a nested @import chain" and pass, while the real critical-path
+ * chain (`document -> root.css -> woff2`) cost ~100ms of pure discovery latency that a green gate
+ * said did not exist.
  *
- * THE MESSAGE IS THE POINT (design §3.3, plan T4). `font-display: swap` does NOT resolve this
- * finding, and every problem this gate emits says so explicitly, naming both failure modes:
+ * THE FIX: depth is now measured FROM THE DOCUMENT. A font is depth 0 — clean — in exactly two
+ * shapes, and no other:
+ *   1. a `<link rel="preload" as="font" crossorigin>` in `htmlFiles` names that URL, or
+ *   2. the `@font-face` sits inside an inline `<style>` in `htmlFiles` itself.
+ * Anything else is `deep-font`, whether it took one hop (the render-blocking entry sheet itself)
+ * or several (one or more nested `@import`s on top of that hop). There is no `maxChainDepth`
+ * option here on purpose (see below) — this module previously exposed one, and a tunable
+ * threshold is exactly the shape of knob that lets a consumer accept the hard rule's violation.
+ * The BFS `@import` walk below still computes and reports the actual hop count, because it is
+ * useful diagnostic detail in the problem message, but it never gates pass/fail — every depth
+ * greater than 0 fails, uniformly.
+ *
+ * THE MESSAGE IS THE POINT (design §3.3, plan T4, and re-affirmed on this fix): `font-display:
+ * swap` does NOT resolve this finding, and every problem this gate emits says so explicitly,
+ * naming both failure modes:
  *   - RENDERING — what paints while a face loads. Governed by `font-display`. `swap` handles
  *     this correctly: text paints in a fallback immediately.
- *   - DISCOVERY — when the browser first learns the font URL exists at all. Governed by where the
- *     `@font-face` sits in the CSS import graph. `swap` does nothing for this.
+ *   - DISCOVERY — when the browser first learns the font URL exists at all. Governed by whether
+ *     the document itself reveals it. `swap` does nothing for this.
  * This exact conflation shipped a real defect as "already correct — NO ACTION" (boufin plan 069
- * §1.3): every clause of that reasoning was true and it answered the wrong question. The gate's
- * own wording is where that misreading gets stopped for the next reader — do not shorten it in a
- * later refactor.
+ * §1.3) TWICE — first for the discovery/rendering conflation itself, then again when this gate's
+ * own depth-from-the-wrong-root bug let the same underlying defect slip past a "fixed" check. The
+ * gate's own wording is where the first misreading gets stopped for the next reader; do not
+ * shorten it in a later refactor.
  *
- * DEPTH IS MINIMUM DISCOVERY DEPTH, computed breadth-first, not "whichever path the walk found
- * first". A DFS pinned a file's depth to whatever order its imports were written in: a shared
- * stylesheet imported both directly (depth 1) and, elsewhere, through one more hop (depth 2) was
- * scored at whichever the walk reached first — reordering unrelated, unreachable-by-the-consumer
- * `@import` statements could flip a clean verdict to a false failure. BFS visits every file in
- * non-decreasing hop order, so the first time a file is reached is provably its shortest path
- * (PR #4 review finding).
+ * THE REMEDY IS NOT "PRELOAD EVERY FACE." The gate cannot know which face the largest
+ * above-the-fold text actually uses, so every `deep-font` message states both legitimate remedies
+ * and says which is usually better: inlining the `@font-face` declaration in the document HEAD
+ * discovers the font at HTML parse time AND still lets the browser download the face lazily, only
+ * once a glyph actually needs it — a `<link rel="preload">`, by contrast, forces an unconditional
+ * download the moment the browser sees the tag. A project with nine faces and six of them on the
+ * critical path would trade ~100ms of discovery latency for ~100KB of critical-path bytes by
+ * preloading all of them — a worse outcome than the defect being fixed.
+ *
+ * DEPTH IS MINIMUM DISCOVERY DEPTH WITHIN THE CSS GRAPH, computed breadth-first, not "whichever
+ * path the walk found first" — this part of the design is unchanged by the fix above. A DFS
+ * pinned a file's depth to whatever order its imports were written in: a shared stylesheet
+ * imported both directly and, elsewhere, through one more hop was scored at whichever the walk
+ * reached first — reordering unrelated, unreachable-by-the-consumer `@import` statements could
+ * change the reported (though never the pass/fail) depth. BFS visits every file in non-decreasing
+ * hop order, so the first time a file is reached is provably its shortest path (PR #4 review
+ * finding). The walk now starts at depth 1, not 0: reaching the render-blocking entry sheet is
+ * itself one hop from the document, before any `@import` is walked.
  *
  * Parsing scope, deliberately hand-rolled (no CSS parser dependency, per house convention):
  *   - Recognises `@import "specifier";`, `@import 'specifier';`, and `@import url(specifier);`
@@ -38,22 +70,34 @@
  *     understand `@media`/`@supports`-wrapped `@font-face` blocks — a font declared inside a
  *     conditional group rule is still found (this scanner does not track nesting depth against
  *     block boundaries), but which depth it is attributed to is always the depth of the stylesheet
- *     it textually appears in, never adjusted for the conditional wrapper.
- *   - An `@font-face {` with no matching `}` is FAIL CLOSED (`unparseable-font-face`), never
- *     silently dropped — a build artifact malformed enough to break brace matching is a stronger
- *     signal something is wrong, not a reason to say nothing (PR #4 review finding).
+ *     it textually appears in, never adjusted for the conditional wrapper. The same hand-rolled
+ *     brace-matching approach is reused, unexported, for `@font-face` blocks inside an inline
+ *     `<style>` — a document-level truncated block is not reported as a separate problem kind
+ *     (unlike the external-stylesheet case below): it simply cannot exempt anything, and its font
+ *     URL is not being walked for elsewhere, so there is nothing else meaningful to say about it.
+ *   - An `@font-face {` with no matching `}` INSIDE AN EXTERNAL STYLESHEET is FAIL CLOSED
+ *     (`unparseable-font-face`), never silently dropped — a build artifact malformed enough to
+ *     break brace matching is a stronger signal something is wrong, not a reason to say nothing
+ *     (PR #4 review finding).
  *   - Does NOT resolve `url()` values that are themselves `data:` URIs into anything meaningful —
  *     they are recorded as the src, but a chain finding about a data URI is inert (nothing to
  *     fetch) and callers should not act on it. Not filtered out, because a silent drop would be a
  *     silent pass for a `@font-face` this gate could not classify.
  *   - Comments (`/* ... *\/`) are stripped before scanning so a commented-out `@import` or
- *     `@font-face` block is never treated as live.
+ *     `@font-face` block is never treated as live. Same treatment for inline `<style>` bodies.
+ *   - The two exemption checks (preload URL, inline `@font-face` URL) are plain string equality
+ *     against the `url()` value as written in each source — no URL normalisation (relative vs.
+ *     absolute, trailing query strings). A consumer whose preload `href` and stylesheet `url()`
+ *     disagree in form will see a false `deep-font`; this mirrors the same documented limitation
+ *     already accepted for `data:` URIs above and for `resolveHref`/`resolveImport` elsewhere in
+ *     this module — the gate reasons about strings as written, not resolved URL identity.
  */
 import { readFileSync } from 'node:fs';
 import { assertResolverReturn, assertStringOption } from './errors.ts';
 
 export type FontChainProblemKind =
   | 'empty-input'
+  | 'unreadable-html'
   | 'unreadable-stylesheet'
   | 'unresolvable-import'
   | 'resolver-error'
@@ -62,25 +106,33 @@ export type FontChainProblemKind =
 
 export interface FontChainProblem {
   kind: FontChainProblemKind;
-  /** The entry stylesheet this problem was found while walking. Empty for `empty-input`, which
-   * precedes any walk. */
+  /** The entry stylesheet this problem was found while walking. Empty for `empty-input` and
+   * `unreadable-html`, neither of which is scoped to one entry sheet. */
   entry: string;
   /** The font `src` URL (for `deep-font`), the `@import` specifier (for `unresolvable-import` and
    * `resolver-error`), or the RESOLVED stylesheet path (for `unreadable-stylesheet` and
    * `unparseable-font-face` — never the `@import` specifier that led there, so a consumer can open
-   * the exact file to fix). The literal string `'(entryStylesheets)'` for `empty-input`, which has
-   * no single file to point at. */
+   * the exact file to fix). The unreadable HTML file's own path for `unreadable-html`. The literal
+   * string `'(htmlFiles)'` or `'(entryStylesheets)'` for `empty-input`, naming which input was
+   * empty — neither has a single file to point at. */
   subject: string;
   /** Import chain from the entry sheet down to where the font/import/defect actually lives, as
    * specifiers, with the entry path as `chain[0]`. Always includes at least the entry — even an
    * `unreadable-stylesheet` finding on the entry itself ships `chain = [entry]`, never `[]`; a
-   * consumer must not branch on `chain.length === 0` to detect that case. Empty only for
-   * `empty-input`, which has no stylesheet to chain from. */
+   * consumer must not branch on `chain.length === 0` to detect that case. Empty for `empty-input`
+   * and `unreadable-html`, neither of which has a stylesheet to chain from. */
   chain: string[];
   message: string;
 }
 
 export interface VerifyFontChainOptions {
+  /** Built HTML documents to scan for the two shapes that exempt a font from `deep-font`: a
+   * `<link rel="preload" as="font" crossorigin>` naming its URL, or an inline `<style>` in the
+   * document containing its `@font-face` block. Scanned globally across every file — a preload
+   * or inline declaration anywhere in `htmlFiles` exempts that URL everywhere it is found in the
+   * CSS graph, since the point being verified is "does at least one document reveal this font,"
+   * not "does every page." */
+  htmlFiles: string[];
   /** Render-blocking CSS files, already resolved to real paths on disk. */
   entryStylesheets: string[];
   /** Resolves an `@import` specifier (as written in the CSS) to a file path. Return `undefined`
@@ -88,9 +140,6 @@ export interface VerifyFontChainOptions {
    * also caught and reported (`resolver-error`), distinct from a returned `undefined`, so a
    * consumer's resolver bug is never confused with a genuinely missing file. */
   resolveImport: (specifier: string) => string | undefined;
-  /** Depth at which a font URL is still considered directly reachable. 0 (default) means a font
-   * must be declared in the entry sheet itself — no nested `@import` parse required. */
-  maxChainDepth?: number;
 }
 
 export interface VerifyFontChainResult {
@@ -101,8 +150,19 @@ export interface VerifyFontChainResult {
 const SWAP_DOES_NOT_FIX_THIS =
   'font-display: swap does not fix this. swap governs RENDERING (what paints while a face ' +
   'loads) and correctly shows fallback text immediately; it does nothing for DISCOVERY (when the ' +
-  "browser's preload scanner first learns this font URL exists), which is governed by where the " +
-  '@font-face sits in the CSS @import graph, not by font-display.';
+  "browser's preload scanner first learns this font URL exists), which is governed by whether " +
+  'the DOCUMENT itself reveals the URL, not by font-display.';
+
+const REMEDY =
+  'A font file must never be imported via CSS — this URL is reachable only through an external ' +
+  'stylesheet, which the browser cannot see until that stylesheet is fetched and parsed. Fix it ' +
+  'one of two ways: (a) inline this @font-face block inside a <style> in the document head — ' +
+  'usually the better choice, since discovery happens at HTML parse time AND the browser still ' +
+  'only downloads the face once a glyph needs it; or (b) add a ' +
+  '<link rel="preload" as="font" crossorigin> for this exact URL in the document, which forces ' +
+  'an unconditional download the moment the browser sees the tag. Do NOT preload every face as a ' +
+  'blanket fix — on a page with several faces on the critical path, that trades a discovery delay ' +
+  'for a bandwidth cost on the SAME critical path, which is worse.';
 
 /** Strips `/* ... *\/` comments so a commented-out `@import`/`@font-face` is never treated as live. */
 function stripComments(css: string): string {
@@ -160,7 +220,9 @@ interface FontFaceScanResult {
  * Every `url(...)` inside every `src:` descriptor of every `@font-face { ... }` block in `css`,
  * plus a count of blocks whose opening brace never closes. Brace-matched rather than
  * regex-spanned across the whole file, so a `@font-face` block does not accidentally swallow
- * unrelated rules that follow it.
+ * unrelated rules that follow it. Shared between external-stylesheet scanning and inline
+ * `<style>` scanning (see `extractInlineFontFaceUrls`) — the block grammar is identical either
+ * way; only how a truncated block is reported differs at the call site.
  */
 function scanFontFaces(css: string): FontFaceScanResult {
   const urls: string[] = [];
@@ -180,11 +242,58 @@ function scanFontFaces(css: string): FontFaceScanResult {
   return { urls, unterminatedBlocks };
 }
 
+/** Reads one attribute's raw string value off a tag's source text. Duplicated minimally from
+ * `cssBudget.ts`'s identical helper (that module is out of scope for this fix, and the shared
+ * shape is small enough that a second copy is cheaper than a cross-cutting helper module for one
+ * function each — same reasoning `cssBudget.ts` already gives for its own copy). */
+function attr(tag: string, name: string): string | undefined {
+  const match = new RegExp(`\\s${name}\\s*=\\s*"([^"]*)"`, 'i').exec(tag);
+  return match?.[1];
+}
+
+/** `<link rel="preload" as="font" crossorigin href="...">` URLs in `html`. All three of `rel`,
+ * `as` and `crossorigin` are required — a preload missing `crossorigin` is a well-known footgun
+ * that makes the browser fetch the font TWICE (once for the preload, once for the actual
+ * font-relation request, since font fetches are always CORS-mode), so a preload without it is not
+ * treated as satisfying the exemption. `crossorigin` is a boolean-ish attribute (bare or
+ * `crossorigin="anonymous"` both count), unlike `rel`/`as`, which carry meaningful values. */
+function extractPreloadFontUrls(html: string): Set<string> {
+  const urls = new Set<string>();
+  for (const match of html.matchAll(/<link\s[^>]*>/gi)) {
+    const tag = match[0];
+    const rel = attr(tag, 'rel');
+    if (rel === undefined || !/\bpreload\b/i.test(rel)) continue;
+    const as = attr(tag, 'as');
+    if (as === undefined || !/^font$/i.test(as)) continue;
+    if (!/(^|\s)crossorigin(\s|=|\/?>|$)/i.test(tag)) continue;
+    const href = attr(tag, 'href');
+    if (href !== undefined) urls.add(href);
+  }
+  return urls;
+}
+
+/** Font `src` URLs declared inside any inline `<style>` block in `html` — the second of the two
+ * shapes that exempt a font from `deep-font` (see module doc comment). A truncated `@font-face`
+ * inside an inline block is not separately reported: this function only feeds the exemption set,
+ * so a malformed inline block simply fails to exempt anything, which is already the fail-closed
+ * outcome (see module doc comment). */
+function extractInlineFontFaceUrls(html: string): Set<string> {
+  const urls = new Set<string>();
+  for (const styleMatch of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
+    const { urls: fontUrls } = scanFontFaces(stripComments(styleMatch[1] ?? ''));
+    for (const url of fontUrls) urls.add(url);
+  }
+  return urls;
+}
+
 interface WalkState {
   problems: FontChainProblem[];
   entryLabel: string;
-  maxChainDepth: number;
   resolveImport: (specifier: string) => string | undefined;
+  /** URLs exempt from `deep-font`: either preloaded (with `crossorigin`) or declared inline in
+   * the document. The union of `extractPreloadFontUrls` and `extractInlineFontFaceUrls` across
+   * every file in `htmlFiles`. */
+  exemptUrls: Set<string>;
   /** Paths already enqueued (by resolved file path). BFS marks a node visited the moment it is
    * enqueued, not when it is processed — that is what guarantees the first (and only) time a node
    * is reached is via its shortest `@import` path, and what guarantees termination on a cycle. */
@@ -278,17 +387,24 @@ function safeResolveImport(
 }
 
 /** One stylesheet queued for BFS processing, at its (shortest-known) depth and the specifier
- * chain that reached it. */
+ * chain that reached it. Depth starts at 1 (see `walk`): reaching the render-blocking entry sheet
+ * is itself one hop from the document. */
 interface QueueItem {
   path: string;
   depth: number;
   chain: string[];
 }
 
-/** Reports every `@font-face` src found in `css` at `depth`: `deep-font` when beyond
- * `maxChainDepth`, silently within budget otherwise (that is the clean case this gate exists to
- * pass). Truncated blocks are reported unconditionally, regardless of depth — that defect is
- * structural, not a discovery-latency finding.
+/** Reports every `@font-face` src found in `css` at `depth`, UNLESS it is in `state.exemptUrls`
+ * (preloaded with `crossorigin`, or declared inline in the document — see module doc comment).
+ * There is no depth threshold: every CSS-graph depth is >= 1 (a document hop, at minimum), and
+ * the hard rule is "a font file must never be imported via CSS" at ANY depth — so every
+ * non-exempt URL found here is reported, uniformly. `depth` still appears in the message purely as
+ * diagnostic detail (how far the defect is), never as a pass/fail threshold.
+ *
+ * Truncated blocks are reported unconditionally, regardless of depth or exemption — that defect
+ * is structural, not a discovery-latency finding, and a font inside a block this scanner could
+ * not parse cannot be checked against `exemptUrls` in the first place.
  *
  * `path` is the RESOLVED file `css` was read from, threaded through separately from `chain`
  * (whose last element is the `@import` specifier as written, not the file it resolved to) — round
@@ -318,18 +434,16 @@ function reportFontFaces(
     });
   }
 
-  if (depth <= state.maxChainDepth) return;
   for (const url of urls) {
+    if (state.exemptUrls.has(url)) continue;
     state.problems.push({
       kind: 'deep-font',
       entry: state.entryLabel,
       subject: url,
       chain,
       message:
-        `font src "${url}" is only reachable at @import depth ${depth} ` +
-        `(chain: ${chain.join(' -> ')}), beyond the allowed depth of ${state.maxChainDepth}. ` +
-        'The preload scanner cannot discover this URL until every stylesheet in that chain has ' +
-        `downloaded and parsed. ${SWAP_DOES_NOT_FIX_THIS}`,
+        `${REMEDY} This URL is reachable only after ${depth} stylesheet hop(s) from the ` +
+        `document (chain: ${chain.join(' -> ')}). ${SWAP_DOES_NOT_FIX_THIS}`,
     });
   }
 }
@@ -337,13 +451,14 @@ function reportFontFaces(
 /**
  * Breadth-first walk of the `@import` graph starting at `entryPath`, so every file's reported
  * depth is its MINIMUM discovery depth rather than whichever path a walk order happened to find
- * first (see module doc comment). `state.visited` marks a path the moment it is enqueued, which
+ * first (see module doc comment). Depth starts at 1, not 0: `entryPath` is already one hop away
+ * from the document that links it. `state.visited` marks a path the moment it is enqueued, which
  * both guarantees the BFS shortest-path property and guarantees termination on a circular
  * `@import` graph — a node already enqueued is never enqueued again, so the queue is bounded by
  * the number of distinct files in the graph.
  */
 function walk(state: WalkState, entryPath: string): void {
-  const queue: QueueItem[] = [{ path: entryPath, depth: 0, chain: [entryPath] }];
+  const queue: QueueItem[] = [{ path: entryPath, depth: 1, chain: [entryPath] }];
   state.visited.add(entryPath);
 
   let item = queue.shift();
@@ -365,20 +480,74 @@ function walk(state: WalkState, entryPath: string): void {
   }
 }
 
+/** Reads every file in `htmlFiles` once and accumulates the union of both exemption shapes across
+ * all of them (see `VerifyFontChainOptions.htmlFiles`). An unreadable file is reported
+ * (`unreadable-html`) and skipped — never abandons signals already collected from files already
+ * read, the same fail-closed-but-not-fail-stop shape as the rest of this module's per-file loops. */
+function collectDocumentSignals(htmlFiles: string[]): {
+  exemptUrls: Set<string>;
+  problems: FontChainProblem[];
+} {
+  const exemptUrls = new Set<string>();
+  const problems: FontChainProblem[] = [];
+  for (const htmlFile of htmlFiles) {
+    let html: string;
+    try {
+      // UNCONDITIONAL catch, NARROWED to exactly this call: htmlFile is already validated to be a
+      // real string (assertStringOption, in verifyFontChain) before it ever reaches this line.
+      html = readFileSync(htmlFile, 'utf8');
+    } catch (error) {
+      problems.push({
+        kind: 'unreadable-html',
+        entry: '',
+        subject: htmlFile,
+        chain: [],
+        message: `could not read "${htmlFile}": ${String(error)}`,
+      });
+      continue;
+    }
+    for (const url of extractPreloadFontUrls(html)) exemptUrls.add(url);
+    for (const url of extractInlineFontFaceUrls(html)) exemptUrls.add(url);
+  }
+  return { exemptUrls, problems };
+}
+
 /**
- * See module doc comment for the defect, the required message content, the minimum-depth BFS
- * requirement, and what the hand-rolled `@import`/`@font-face` parsing does not handle.
+ * See module doc comment for the defect, the hard no-non-zero-depth rule, the required message
+ * content, the minimum-depth BFS diagnostic, and what the hand-rolled `@import`/`@font-face`
+ * parsing does not handle.
  */
 export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChainResult {
-  const { entryStylesheets, resolveImport, maxChainDepth = 0 } = options;
-  const problems: FontChainProblem[] = [];
+  const { htmlFiles, entryStylesheets, resolveImport } = options;
 
+  // Boundary validation (see ./errors.ts): a caller passing a non-string element in either array
+  // is a contract violation and must crash loudly here, naming the index, rather than flow into
+  // readFileSync and surface as a misclassified unreadable-html/unreadable-stylesheet finding.
+  for (const [index, file] of htmlFiles.entries()) assertStringOption(file, `htmlFiles[${index}]`);
+  for (const [index, entry] of entryStylesheets.entries()) {
+    assertStringOption(entry, `entryStylesheets[${index}]`);
+  }
+
+  // Fail closed (plan §2 constraint 4): nothing to examine must never read as a clean pass. Both
+  // are checked (not short-circuited) so a caller misconfiguring both sees both problems, but
+  // processing stops here — walking the CSS graph with zero known documents would report every
+  // font as un-exemptable, burying the real empty-input signal in a flood of findings that looks
+  // like the check ran when it did not.
+  const emptyProblems: FontChainProblem[] = [];
+  if (htmlFiles.length === 0) {
+    emptyProblems.push({
+      kind: 'empty-input',
+      entry: '',
+      subject: '(htmlFiles)',
+      chain: [],
+      message:
+        'htmlFiles is empty — there is nothing to check for a preload or inline <style> that ' +
+        'would exempt a font, and that is being reported rather than treated as a pass. Did the ' +
+        'built HTML output get listed correctly?',
+    });
+  }
   if (entryStylesheets.length === 0) {
-    // Fail closed (plan §2 constraint 4): zero entry stylesheets means nothing was walked at all.
-    // Reporting `ok: true` here would read as "every font is directly discoverable" when in fact
-    // zero stylesheets were ever examined — the exact silent-pass-on-vacuous-input shape this gate
-    // exists to rule out.
-    problems.push({
+    emptyProblems.push({
       kind: 'empty-input',
       entry: '',
       subject: '(entryStylesheets)',
@@ -388,20 +557,17 @@ export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChai
         'is being reported rather than treated as a pass. Did the render-blocking sheet list get ' +
         'built correctly?',
     });
-    return { ok: false, problems };
   }
+  if (emptyProblems.length > 0) return { ok: false, problems: emptyProblems };
 
-  for (const [index, entry] of entryStylesheets.entries()) {
-    // Same boundary-validation principle as the resolver return (see errors.ts): a caller passing
-    // a non-string element in entryStylesheets — a violation of the declared string[] type — must
-    // crash loudly here rather than flow into readFileSync and surface as a misclassified
-    // unreadable-stylesheet finding.
-    assertStringOption(entry, `entryStylesheets[${index}]`);
+  const { exemptUrls, problems } = collectDocumentSignals(htmlFiles);
+
+  for (const entry of entryStylesheets) {
     const state: WalkState = {
       problems,
       entryLabel: entry,
-      maxChainDepth,
       resolveImport,
+      exemptUrls,
       visited: new Set<string>(),
     };
     walk(state, entry);

@@ -66,6 +66,13 @@
  * project — the same two-gate split that already exists for images, where `verifyHtmlImages`
  * (attributes, here) and a browser-driven layout sweep (rendered box, there) both run because
  * neither subsumes the other. A consumer running only these gates has weaker coverage than that.
+ *
+ * `findDanglingClasses` is the fourth gate: a CSS-Modules selector joining a class from one
+ * built file to a hashed name from another compiles cleanly but matches no element, because CSS
+ * Modules hashes class names per source file. That is dead weight in a render-blocking
+ * stylesheet — parsed and evaluated on every route for zero effect — and simultaneously means the
+ * rule's own intent is silently not applying. See `./danglingClasses.ts` for the mechanism, the
+ * allowlist for runtime-conditional variants, and the fail-closed rules it inherits from here.
  */
 
 export type {
@@ -75,6 +82,13 @@ export type {
   VerifyCssBudgetResult,
 } from './cssBudget.ts';
 export { verifyCssBudget } from './cssBudget.ts';
+export type {
+  DanglingClassProblem,
+  DanglingClassProblemKind,
+  FindDanglingClassesOptions,
+  FindDanglingClassesResult,
+} from './danglingClasses.ts';
+export { findDanglingClasses } from './danglingClasses.ts';
 export type {
   FontChainProblem,
   FontChainProblemKind,

@@ -1,0 +1,258 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { findDanglingClasses } from './danglingClasses.ts';
+
+let root: string;
+let htmlFile: string;
+let cssFile: string;
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'uxr-dangling-'));
+  htmlFile = join(root, 'index.html');
+  cssFile = join(root, 'page.module.css');
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+describe('findDanglingClasses', () => {
+  it('passes clean when every hashed class in CSS appears on an element in HTML', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 100%; }');
+    writeFileSync(htmlFile, '<div class="_hiwViz_18mh8_533">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  // --- The defect: a cross-module-hash selector matches nothing ----------------------------
+
+  it('RED: fires dangling-class when a hashed selector matches no element in any built HTML', () => {
+    // Defect mechanism: page.module.css's ._hiwViz hashes to _18mh8_533, but the only class on
+    // any element is home.module.css's _hiwViz hashed to _1o51b_39 — a different file, a
+    // different hash, syntactically valid, matches nothing.
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(htmlFile, '<div class="_hiwViz_1o51b_39">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'dangling-class' && p.className === '_hiwViz_18mh8_533',
+      ),
+    ).toBe(true);
+  });
+
+  it('GREEN: dangling-class does not fire once the mutation is reverted', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(htmlFile, '<div class="_hiwViz_18mh8_533">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.problems.some((p) => p.kind === 'dangling-class')).toBe(false);
+  });
+
+  // --- Allowlisted runtime-conditional variants ---------------------------------------------
+
+  it('does not fire on an allowlisted runtime-conditional variant, matched by LOGICAL name', () => {
+    // `loading && styles.loading` — absent from every prerendered page because no current route
+    // passes the prop, not because the rule is broken.
+    writeFileSync(cssFile, '._loading_18mh8_40 { opacity: 0.5; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      allowlist: [/^(loading|dark|error|indeterminate)$/],
+    });
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  it('RED: the allowlist entry does not also excuse an unrelated dangling class', () => {
+    writeFileSync(
+      cssFile,
+      '._loading_18mh8_40 { opacity: 0.5; }\n._hiwViz_18mh8_533 { width: 465px; }',
+    );
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      allowlist: [/^(loading|dark|error|indeterminate)$/],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'dangling-class', className: '_hiwViz_18mh8_533' }),
+    ]);
+  });
+
+  it('allowlist survives a hash change across rebuilds (matches by logical name, not hash)', () => {
+    // Same logical name "loading", different hash+line — proves the allowlist entry is not
+    // pinned to one build's specific hash.
+    writeFileSync(cssFile, '._loading_9zz01_7 { opacity: 0.5; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      allowlist: [/^loading$/],
+    });
+    expect(result.problems.some((p) => p.kind === 'dangling-class')).toBe(false);
+  });
+
+  // --- Only hashed classes are in scope --------------------------------------------------
+
+  it('never flags a plain, non-hashed global class', () => {
+    writeFileSync(cssFile, '.container { max-width: 1200px; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  // --- Anti-vacuity: empty input must never read as clean -----------------------------------
+
+  it('RED: fires empty-input(htmlFiles) when htmlFiles is empty', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    const result = findDanglingClasses({ htmlFiles: [], cssFiles: [cssFile] });
+    expect(result.ok).toBe(false);
+    expect(result.problems.some((p) => p.kind === 'empty-input' && p.input === 'htmlFiles')).toBe(
+      true,
+    );
+  });
+
+  it('GREEN: empty-input(htmlFiles) does not fire once htmlFiles is non-empty', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(htmlFile, '<div class="_hiwViz_18mh8_533">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.problems.some((p) => p.kind === 'empty-input')).toBe(false);
+  });
+
+  it('RED: fires empty-input(cssFiles) when cssFiles is empty', () => {
+    writeFileSync(htmlFile, '<div class="whatever">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [] });
+    expect(result.ok).toBe(false);
+    expect(result.problems.some((p) => p.kind === 'empty-input' && p.input === 'cssFiles')).toBe(
+      true,
+    );
+  });
+
+  it('GREEN: empty-input(cssFiles) does not fire once cssFiles is non-empty', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(htmlFile, '<div class="_hiwViz_18mh8_533">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.problems.some((p) => p.kind === 'empty-input')).toBe(false);
+  });
+
+  it('reports both empty-input kinds, and does not also flood with dangling-class noise', () => {
+    const result = findDanglingClasses({ htmlFiles: [], cssFiles: [] });
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'empty-input', input: 'htmlFiles' }),
+      expect.objectContaining({ kind: 'empty-input', input: 'cssFiles' }),
+    ]);
+  });
+
+  // --- Unreadable file: reported, never thrown -----------------------------------------------
+
+  it('RED: reports unreadable-css instead of throwing when cssFile is a directory', () => {
+    mkdirSync(cssFile);
+    writeFileSync(htmlFile, '<div class="whatever">hi</div>');
+    let threw = false;
+    let result: ReturnType<typeof findDanglingClasses> | undefined;
+    try {
+      result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    expect(result?.ok).toBe(false);
+    expect(result?.problems.some((p) => p.kind === 'unreadable-css' && p.css === cssFile)).toBe(
+      true,
+    );
+  });
+
+  it('GREEN: unreadable-css does not fire once cssFile is a real readable file', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(htmlFile, '<div class="_hiwViz_18mh8_533">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.problems.some((p) => p.kind === 'unreadable-css')).toBe(false);
+  });
+
+  it('RED: reports unreadable-html instead of throwing when htmlFile is a directory', () => {
+    mkdirSync(htmlFile);
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    let threw = false;
+    let result: ReturnType<typeof findDanglingClasses> | undefined;
+    try {
+      result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+    expect(result?.ok).toBe(false);
+    expect(result?.problems.some((p) => p.kind === 'unreadable-html' && p.html === htmlFile)).toBe(
+      true,
+    );
+  });
+
+  it('an unreadable HTML file does not abort the loop over the remaining files', () => {
+    // Fail-closed, but not fail-stop: a second, readable HTML file's classes must still be
+    // collected even though the first one could not be read.
+    const secondHtml = join(root, 'second.html');
+    mkdirSync(htmlFile);
+    writeFileSync(secondHtml, '<div class="_hiwViz_18mh8_533">hi</div>');
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile, secondHtml], cssFiles: [cssFile] });
+    expect(result.problems.some((p) => p.kind === 'unreadable-html')).toBe(true);
+    expect(result.problems.some((p) => p.kind === 'dangling-class')).toBe(false);
+  });
+
+  // --- Boundary validation: a contract violation throws, it is not misreported --------------
+
+  it('propagates an htmlFiles element contract violation instead of misreporting it', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    let caught: unknown;
+    try {
+      findDanglingClasses({
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the htmlFiles element contract
+        htmlFiles: [new URL('file:///nonexistent/index.html') as any],
+        cssFiles: [cssFile],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('htmlFiles[0]');
+  });
+
+  it('propagates a cssFiles element contract violation instead of misreporting it', () => {
+    writeFileSync(htmlFile, '<div class="whatever">hi</div>');
+    let caught: unknown;
+    try {
+      findDanglingClasses({
+        htmlFiles: [htmlFile],
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the cssFiles element contract
+        cssFiles: [{ notAPath: true } as any],
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('cssFiles[0]');
+  });
+
+  // --- Custom hashPattern ---------------------------------------------------------------------
+
+  it('respects a custom hashPattern, including its logical-name capture group', () => {
+    // A non-CSS-Modules hash shape: `name__hash`, logical name is group 1.
+    writeFileSync(cssFile, '.hiwViz__a1b2c3 { width: 465px; }\n.loading__d4e5f6 { opacity: 0.5; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+    const customPattern = /^([A-Za-z0-9]+)__[a-f0-9]+$/;
+
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      hashPattern: customPattern,
+      allowlist: [/^loading$/],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'dangling-class', className: 'hiwViz__a1b2c3' }),
+    ]);
+  });
+});

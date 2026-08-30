@@ -200,6 +200,8 @@ browser bundle never pulls in Node/`sharp` code:
     }
   }
   ```
+- `@uxr/react-shared-kit/perf` — deploy-performance gates over built output (headers, CSS budget,
+  font-discovery chains, dangling CSS-Modules selectors). See **Deploy-performance gates** below.
 
 `react` is a peer dependency for the root subpath. `sharp` and `imagetools-core` are peer
 dependencies too, but **optional** — install them only if you use `@uxr/react-shared-kit/node`; the
@@ -287,22 +289,38 @@ tell a misconfigured path from a genuinely empty one.
 
 ## Deploy-performance gates
 
-`@uxr/react-shared-kit/perf` — three static-analysis gates over **built** output, for projects on a
+`@uxr/react-shared-kit/perf` — four static-analysis gates over **built** output, for projects on a
 Vite-style content-hashing bundler behind a static host. Sibling of `/check`, not part of it: those
 are image gates and live under `src/image/`.
 
 ```ts
-import { verifyHeaders, verifyCssBudget, verifyFontChain } from '@uxr/react-shared-kit/perf';
+import {
+  verifyHeaders,
+  verifyCssBudget,
+  verifyFontChain,
+  findDanglingClasses,
+} from '@uxr/react-shared-kit/perf';
 ```
 
 | Gate | Catches |
 |---|---|
 | `verifyHeaders` | Content-hashed assets served `max-age=0, must-revalidate`, so every repeat visit pays a revalidation round-trip. Also refuses `immutable` on any **unhashed** path — that is cache poisoning: the file changes, the URL does not, clients hold a stale copy for a year. |
 | `verifyCssBudget` | Render-blocking CSS over a per-document byte budget — and any stylesheet `href` that resolves to no file at all. |
-| `verifyFontChain` | Fonts reachable only after a nested CSS parse (`@import` chains), so the browser's preload scanner cannot see the woff2 URLs. |
+| `verifyFontChain` | **A font file imported via CSS at all** — a hard rule, not a budget: a face is clean only if the HTML itself reveals it (a `<link rel="preload" as="font" crossorigin>`, or the `@font-face` inlined in a `<style>` in the document). A face declared only in an external stylesheet fails, whether that's the render-blocking sheet itself or a nested `@import` — depth still appears in the message as diagnostic detail, but there is no depth that passes without one of those two shapes. |
+| `findDanglingClasses` | A CSS-Modules selector joining a class from one built file to a hashed name from another — compiles cleanly, matches no element anywhere. Dead bytes shipped and evaluated on every route that loads the chunk, **and** the rule's own intent silently isn't applying (one such rule cost a production element 465px of width). |
 
 Each returns `{ ok, problems }`. They never log and never call `process.exit` — your wrapper owns
 presentation and exit codes, the same contract as `/check`.
+
+**A `problems` entry is not the only way these gates can end a run.** Each validates its
+consumer-supplied inputs — a `resolveHref`/`resolveImport` callback's return value, a required
+string option, an element of a `htmlFiles`/`cssFiles` array — against its declared type the moment
+it is produced, and **throws immediately** if it is violated: a resolver returning a `URL` object
+instead of its `.pathname`, say. That is a caller bug, not a build fact, so it is not folded into
+`problems` disguised as an "unreadable file" pointing at something that is actually fine. Reserve
+`problems` for facts about the build itself — missing/unreadable files, malformed rules, vacuous
+input, a resolver that declines to resolve by returning `undefined`. A crash on startup means fix
+the call site, not the build.
 
 ### These gates are necessary, not sufficient
 
@@ -319,23 +337,46 @@ exists for images, where `verifyHtmlImages` (attributes, here) and a browser-dri
 (rendered box, there) both run because neither subsumes the other. **A project running only these
 gates has weaker coverage than one running both.**
 
+### `verifyFontChain` measures from the DOCUMENT, not the entry stylesheet
+
+An earlier version of this gate measured `@import` depth starting from the render-blocking entry
+stylesheet, so a font declared directly in that sheet — zero `@import`s at all — scored depth 0 and
+passed. That is the wrong frame of reference: the browser's preload scanner reads the **document**,
+not any CSS file, so a font whose only declaration lives in a stylesheet is undiscoverable until
+that stylesheet is fetched *and* parsed, `@import` or not. `verifyFontChain` now needs `htmlFiles`
+so it can check the two shapes that actually make a font document-discoverable — a font-preload
+link or an inlined `@font-face` — and treats everything else as a defect, at any depth. There is no
+`maxChainDepth` option to raise instead: **a font file must never be imported via CSS** is a hard
+rule, not a threshold a consumer can tune past.
+
+When a `deep-font` finding fires, prefer **inlining** the `@font-face` block in the document head
+over adding a preload: inlining gets the browser discovering the font at HTML parse time *and*
+still only downloads the face lazily, once a glyph actually needs it, while a preload forces an
+unconditional download the moment the tag is seen. **Do not preload every face as a blanket fix** —
+a page with several faces on the critical path would trade a discovery delay for a bandwidth cost
+on that same critical path, which is worse than the defect being fixed. The gate cannot know which
+face your largest above-the-fold text actually uses, so it reports what it found and leaves that
+choice to you.
+
 ### `font-display: swap` does not answer `verifyFontChain`
 
-Worth stating because an expert got it wrong and shipped the defect. There are two distinct failure
-modes and one does not answer the other:
+Worth stating because an expert got it wrong and shipped the defect — twice, the second time via
+this very gate's own depth-from-the-wrong-root bug above. There are two distinct failure modes and
+one does not answer the other:
 
 - **Rendering** — what the user sees while a face loads. Governed by `font-display`. `swap` handles
   this correctly.
-- **Discovery** — when the browser first learns the font URL exists. Governed by where the
-  `@font-face` sits in the CSS graph. `swap` does nothing for it.
+- **Discovery** — when the browser first learns the font URL exists. Governed by whether the
+  document itself reveals it. `swap` does nothing for it.
 
 A project whose fonts all declare `swap` can still be several hundred milliseconds late to request
 them. `verifyFontChain` measures the second thing, and says so in its own problem messages.
 
 ### Vacuity
 
-An empty `assetsDir`, or a `_headers` that parses to zero rules, is reported as a problem — not
-passed. A gate that reports success when the build produced nothing to verify is worse than no gate.
+An empty `assetsDir`, a `_headers` that parses to zero rules, an empty `htmlFiles`, or an empty
+`entryStylesheets`/`cssFiles` is reported as a problem — not passed. A gate that reports success
+when the build produced nothing to verify is worse than no gate.
 
 ---
 
