@@ -43,6 +43,11 @@
       "source": "./src/image/check/index.ts",
       "types": "./dist/image/check/index.d.ts",
       "import": "./dist/image/check/index.js"
+    },
+    "./perf": {
+      "source": "./src/perf/index.ts",
+      "types": "./dist/perf/index.d.ts",
+      "import": "./dist/perf/index.js"
     }
   },
   "files": [

@@ -285,6 +285,60 @@ tell a misconfigured path from a genuinely empty one.
 
 ---
 
+## Deploy-performance gates
+
+`@uxr/react-shared-kit/perf` — three static-analysis gates over **built** output, for projects on a
+Vite-style content-hashing bundler behind a static host. Sibling of `/check`, not part of it: those
+are image gates and live under `src/image/`.
+
+```ts
+import { verifyHeaders, verifyCssBudget, verifyFontChain } from '@uxr/react-shared-kit/perf';
+```
+
+| Gate | Catches |
+|---|---|
+| `verifyHeaders` | Content-hashed assets served `max-age=0, must-revalidate`, so every repeat visit pays a revalidation round-trip. Also refuses `immutable` on any **unhashed** path — that is cache poisoning: the file changes, the URL does not, clients hold a stale copy for a year. |
+| `verifyCssBudget` | Render-blocking CSS over a per-document byte budget — and any stylesheet `href` that resolves to no file at all. |
+| `verifyFontChain` | Fonts reachable only after a nested CSS parse (`@import` chains), so the browser's preload scanner cannot see the woff2 URLs. |
+
+Each returns `{ ok, problems }`. They never log and never call `process.exit` — your wrapper owns
+presentation and exit codes, the same contract as `/check`.
+
+### These gates are necessary, not sufficient
+
+**Do not read a green result as "the problem is closed."** Everything here is static analysis. It
+sees bytes, hrefs, the `@import` graph and header rules. It **cannot** see what the browser actually
+computed, which stylesheet it really blocked on, or what a rendered box became.
+
+A real-browser oracle cannot live in this package: the Vitest environment is deliberately `node`
+with no DOM, and pulling a browser into a package whose gates run inside deploy chains would drag a
+heavyweight dependency into exactly the place ruling 6.3 keeps native binaries out of.
+
+So pair each gate with a browser check in your own project — the same two-gate split that already
+exists for images, where `verifyHtmlImages` (attributes, here) and a browser-driven layout sweep
+(rendered box, there) both run because neither subsumes the other. **A project running only these
+gates has weaker coverage than one running both.**
+
+### `font-display: swap` does not answer `verifyFontChain`
+
+Worth stating because an expert got it wrong and shipped the defect. There are two distinct failure
+modes and one does not answer the other:
+
+- **Rendering** — what the user sees while a face loads. Governed by `font-display`. `swap` handles
+  this correctly.
+- **Discovery** — when the browser first learns the font URL exists. Governed by where the
+  `@font-face` sits in the CSS graph. `swap` does nothing for it.
+
+A project whose fonts all declare `swap` can still be several hundred milliseconds late to request
+them. `verifyFontChain` measures the second thing, and says so in its own problem messages.
+
+### Vacuity
+
+An empty `assetsDir`, or a `_headers` that parses to zero rules, is reported as a problem — not
+passed. A gate that reports success when the build produced nothing to verify is worse than no gate.
+
+---
+
 ## Consuming the TypeScript source
 
 The default entry point is compiled JavaScript plus declarations, which works in any bundler and any
