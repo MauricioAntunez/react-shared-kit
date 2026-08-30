@@ -25,9 +25,17 @@
  * So this stops trying to read the error and instead enforces the one thing that IS stable: the
  * resolver's own declared contract (`(input) => string | undefined`) and an option's declared type
  * (`string`). Checked the moment the value is produced, before it ever reaches an fs call. Once
- * that passes, every gate's `readFileSync`/`readdirSync` catch reports UNCONDITIONALLY — no
+ * that passes, every gate's `readFileSync`/`readdirSync` CALL reports UNCONDITIONALLY — no
  * further classification, because a value that is provably a string can only fail there for a real
  * reason about the thing it names (missing, a directory, too large, a NUL byte, no permission).
+ *
+ * That guarantee is scoped to the fs call ITSELF, not to whatever `try` block happens to contain
+ * it (round 5 review finding): each gate's `try` must wrap ONLY `readFileSync`/`readdirSync`, not
+ * a second processing step performed on the bytes it returns (`brotliCompressSync` in
+ * `cssBudget.ts`, comment-stripping in `fontChain.ts` were both found wrapping one extra step in
+ * the same catch). A bug in that second step is not a fact about the file — the file was read
+ * successfully — and must propagate rather than being reported under a filesystem-problem kind.
+ * This module only validates the INPUT; keeping each `try` narrow is the caller's responsibility.
  */
 
 /** A short, readable description of an unexpected value for an error message — never assumes it

@@ -109,6 +109,16 @@ function stripComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
+/**
+ * Test-only indirection point (module export, NOT re-exported from `./index.ts`'s barrel — same
+ * pattern as `./errors.ts`'s helpers). `stripComments` is a pure regex transform with no external
+ * module boundary to intercept, unlike `brotliCompressSync` in `cssBudget.ts`, so this object
+ * exists purely so a test can substitute a throwing implementation and prove the round 5 fix: a
+ * `stripComments` failure propagates uncaught rather than being reported as `unreadable-stylesheet`
+ * about a file that WAS read successfully. Never mutated outside a test.
+ */
+export const internal = { stripComments };
+
 /** One `@import` specifier, unwrapped from `url(...)` and quotes either way it can be written. */
 function extractImportSpecifiers(css: string): string[] {
   const specifiers: string[] = [];
@@ -185,19 +195,30 @@ interface WalkState {
  * Reads and comment-strips one stylesheet, reporting `unreadable-stylesheet` and returning
  * `undefined` on failure. FAIL CLOSED — an unreadable file is never a silent pass.
  *
- * UNCONDITIONAL catch (round 4 review redesign): every caller of this function only ever passes a
- * value already proven to be a real string — the entry path (validated in `verifyFontChain`) or a
- * resolved path (validated by `assertResolverReturn` in `safeResolveImport` before it is ever
- * queued). Given a real string, whatever `readFileSync` raises about it — ENOENT, EACCES, EISDIR,
- * `ERR_FS_FILE_TOO_LARGE`, a NUL byte — IS a fact about the build and belongs in `problems`. See
- * `./errors.ts` for why classifying the error after the fact (what round 2-4 tried) cannot work,
- * and why validating the input at the boundary instead makes this catch simple again. The walk is
- * also iterative (BFS, not recursive — see `walk`), so the stack-overflow scenario that once made
- * this catch's classification matter no longer arises here at all.
+ * UNCONDITIONAL catch, NARROWED to exactly the `readFileSync` call (round 4 then round 5 review
+ * redesign): every caller of this function only ever passes a value already proven to be a real
+ * string — the entry path (validated in `verifyFontChain`) or a resolved path (validated by
+ * `assertResolverReturn` in `safeResolveImport` before it is ever queued). Given a real string,
+ * whatever `readFileSync` raises about it — ENOENT, EACCES, EISDIR, `ERR_FS_FILE_TOO_LARGE`, a
+ * NUL byte — IS a fact about the build and belongs in `problems`. See `./errors.ts` for why
+ * classifying the error after the fact (what rounds 2-4 tried) cannot work, and why validating the
+ * input at the boundary instead makes this catch simple again.
+ *
+ * `stripComments` runs OUTSIDE the try, deliberately (round 5 review finding): it is a pure
+ * regex transform of bytes ALREADY read from disk, not an fs fact. Lumping it into the same catch
+ * as `readFileSync` was the same bug already fixed for the resolver boundary in round 4 — one
+ * catch spanning two unrelated operations reports a bug in the second operation as if it were a
+ * fact about the first. A `stripComments` failure is a bug in this module, not a build defect,
+ * and propagates like any other internal bug rather than becoming a misleading "could not read"
+ * finding about a file that WAS read successfully.
+ *
+ * The walk is also iterative (BFS, not recursive — see `walk`), so the stack-overflow scenario
+ * that once made this catch's classification matter no longer arises here at all.
  */
 function readStylesheet(state: WalkState, path: string, chain: string[]): string | undefined {
+  let raw: string;
   try {
-    return stripComments(readFileSync(path, 'utf8'));
+    raw = readFileSync(path, 'utf8');
   } catch (error) {
     state.problems.push({
       kind: 'unreadable-stylesheet',
@@ -208,6 +229,7 @@ function readStylesheet(state: WalkState, path: string, chain: string[]): string
     });
     return undefined;
   }
+  return internal.stripComments(raw);
 }
 
 /** `state.resolveImport(specifier)`, with a throw converted into a `resolver-error` problem

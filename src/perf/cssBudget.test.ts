@@ -1,8 +1,30 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { verifyCssBudget } from './cssBudget.ts';
+
+/**
+ * Round 5 review finding: checkDocument's try block used to wrap BOTH readFileSync and, in
+ * 'brotli' mode, brotliCompressSync in one catch — so a compression-layer bug was mislabelled as
+ * 'unreadable-file' ("could not read...") about a file that had, in fact, been read successfully.
+ * This mock proves the fix: brotliCompressSync can be made to throw independently of any real fs
+ * condition, and the test below asserts that throw propagates rather than becoming a problem.
+ * Falls through to the REAL implementation whenever not explicitly told to throw, so every other
+ * test in this file (none of which exercise 'brotli' mode except the one dedicated test) is
+ * unaffected.
+ */
+const brotliMock = vi.fn<(...args: unknown[]) => unknown>();
+vi.mock('node:zlib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:zlib')>();
+  return {
+    ...actual,
+    brotliCompressSync: (...args: Parameters<typeof actual.brotliCompressSync>) => {
+      const mocked = brotliMock(...args);
+      return mocked ?? actual.brotliCompressSync(...args);
+    },
+  };
+});
 
 let root: string;
 
@@ -131,6 +153,25 @@ describe('verifyCssBudget', () => {
       measure: 'brotli',
     });
     expect(brotli).toEqual({ ok: true, problems: [] });
+  });
+
+  it('propagates a brotliCompressSync failure instead of misreporting it as unreadable-file (round 5 review finding)', () => {
+    // The file is read successfully — only the COMPRESSION step fails. Before round 5's fix,
+    // checkDocument's one try/catch spanned both readFileSync and brotliCompressSync, so this
+    // reported {kind: 'unreadable-file', detail: 'could not read ...'} about a file that WAS read.
+    // A compression-layer bug is not a fact about the build and must propagate instead.
+    write('main.css', 'body { color: red; }');
+    const html = write(
+      'index.html',
+      '<html><head><link rel="stylesheet" href="/main.css"></head></html>',
+    );
+    brotliMock.mockImplementationOnce(() => {
+      throw new RangeError('BUG: caller passed bad compression options');
+    });
+
+    expect(() =>
+      verifyCssBudget({ htmlFiles: [html], resolveHref, maxBytes: 5_000, measure: 'brotli' }),
+    ).toThrow('BUG: caller passed bad compression options');
   });
 
   it('passes clean when render-blocking CSS exactly equals maxBytes (boundary, PR #4 IMPORTANT 4)', () => {

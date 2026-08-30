@@ -35,9 +35,17 @@
  * caller-bug `URL` object AND for a syntactically valid string path containing a NUL byte, which
  * IS a fact about the build. Validating the resolver's own declared contract at the boundary
  * sidesteps the classification problem entirely: once a value is known to be a real string,
- * everything `readFileSync`/`readdirSync` subsequently raises about it — ENOENT, EACCES, EISDIR,
- * a NUL byte, `ERR_FS_FILE_TOO_LARGE` — is unconditionally a fact about the build, and is
- * reported, never re-thrown. See `./errors.ts` for the full reasoning.
+ * everything the `readFileSync`/`readdirSync` CALL ITSELF subsequently raises about it — ENOENT,
+ * EACCES, EISDIR, a NUL byte, `ERR_FS_FILE_TOO_LARGE` — is unconditionally a fact about the
+ * build, and is reported, never re-thrown.
+ *
+ * That claim only holds if the `try` scopes EXACTLY the fs call — a fifth defect (round 5) had
+ * each catch's `try` also wrapping a second, unrelated operation on the bytes the fs call already
+ * returned (`brotliCompressSync` in `cssBudget`, the comment-stripping transform in
+ * `fontChain`), so a bug in THAT step was still misreported as a filesystem fact about a file
+ * that had, in fact, been read successfully. Every `try` here now wraps only the fs call itself;
+ * a failure in a subsequent processing step propagates like any other internal bug. See
+ * `./errors.ts` for the full reasoning.
  *
  * Fail closed means no silent pass. It does not mean pretending a defect is a finding — nor
  * pretending a finding is a defect.

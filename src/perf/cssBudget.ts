@@ -119,8 +119,20 @@ export interface VerifyCssBudgetResult {
   problems: CssBudgetProblem[];
 }
 
-function measuredSize(file: string, measure: 'raw' | 'brotli'): number {
-  const bytes = readFileSync(file);
+/**
+ * Round 5 review finding: the fs call and the compression step must NOT share one catch. Only
+ * `readFileSync` is a fact about the file on disk (ENOENT, EACCES, a NUL byte,
+ * `ERR_FS_FILE_TOO_LARGE` — see ./errors.ts); `brotliCompressSync` runs on bytes ALREADY read
+ * successfully, so a failure there is a bug in Node's compression layer, not a fact about the
+ * stylesheet — reporting it as 'unreadable-file' ("could not read...") would be false: the file
+ * WAS read. Split so the caller can guard exactly the fs call and let anything from the
+ * compression step propagate like any other internal bug.
+ */
+function readCssBytes(file: string): Buffer {
+  return readFileSync(file);
+}
+
+function compressedOrRawSize(bytes: Buffer, measure: 'raw' | 'brotli'): number {
   return measure === 'brotli' ? brotliCompressSync(bytes).length : bytes.length;
 }
 
@@ -190,14 +202,17 @@ function checkDocument(
     const file = resolveLink(html, link.href, resolveHref, problems);
     if (file === undefined) continue;
 
+    let fileBytes: Buffer;
     try {
-      bytes += measuredSize(file, measure);
+      // UNCONDITIONAL catch, NARROWED to exactly this call (round 5 review finding): `file`
+      // reaching this point has already been validated by assertResolverReturn above — it IS a
+      // real string. Whatever readFileSync raises about it (ENOENT, EACCES, a NUL byte,
+      // ERR_FS_FILE_TOO_LARGE) is therefore a fact about the build, not a caller bug, and belongs
+      // here. See ./errors.ts for why classifying the error after the fact (what rounds 2-4a
+      // tried) cannot work. The try previously also wrapped compressedOrRawSize's brotli step,
+      // which is NOT an fs fact — see readCssBytes/compressedOrRawSize's doc comment.
+      fileBytes = readCssBytes(file);
     } catch (error) {
-      // UNCONDITIONAL catch (round 4 review redesign): `file` reaching this point has already
-      // been validated by assertResolverReturn above — it IS a real string. Whatever readFileSync
-      // raises about it (ENOENT, EACCES, a NUL byte, ERR_FS_FILE_TOO_LARGE) is therefore a fact
-      // about the build, not a caller bug, and belongs here. See ./errors.ts for why classifying
-      // the error after the fact (what rounds 2-4a tried) cannot work.
       problems.push({
         kind: 'unreadable-file',
         html,
@@ -205,7 +220,9 @@ function checkDocument(
         file,
         detail: `could not read resolved stylesheet "${file}" for href "${link.href}": ${String(error)}`,
       });
+      continue;
     }
+    bytes += compressedOrRawSize(fileBytes, measure);
   }
 
   if (bytes > maxBytes) {

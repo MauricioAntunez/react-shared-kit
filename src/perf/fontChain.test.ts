@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { verifyFontChain } from './fontChain.ts';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { internal, verifyFontChain } from './fontChain.ts';
 
 let root: string;
 
@@ -399,5 +399,27 @@ describe('verifyFontChain', () => {
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'unreadable-stylesheet', subject: root }),
     ]);
+  });
+
+  it('propagates a stripComments failure instead of misreporting it as unreadable-stylesheet (round 5 review finding)', () => {
+    // The file is read successfully — only the comment-stripping TRANSFORM fails. Before round 5's
+    // fix, readStylesheet's one try/catch spanned both readFileSync and stripComments, so this
+    // would have reported {kind: 'unreadable-stylesheet', message: 'could not read ...'} about a
+    // file that WAS read. A bug in our own transform is not a fact about the build and must
+    // propagate instead. stripComments has no external module boundary to mock (unlike
+    // brotliCompressSync in cssBudget.ts), so `internal.stripComments` is a test-only indirection
+    // point that exists purely to make this provable.
+    const entry = write('entry-strip-comments-bug.css', `body { color: red; }`);
+    const spy = vi.spyOn(internal, 'stripComments').mockImplementationOnce(() => {
+      throw new RangeError('BUG: comment-stripping regex blew up');
+    });
+
+    try {
+      expect(() =>
+        verifyFontChain({ entryStylesheets: [entry], resolveImport: () => undefined }),
+      ).toThrow('BUG: comment-stripping regex blew up');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

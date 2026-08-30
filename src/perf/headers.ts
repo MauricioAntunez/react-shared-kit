@@ -129,22 +129,26 @@ function checkAssetsHashed(
   hashPattern: RegExp,
   problems: HeadersProblem[],
 ): void {
-  let assetFiles: string[];
+  let walkedFiles: string[];
   try {
     // Recursive: Vite's documented `assetFileNames: 'assets/[ext]/[name]-[hash][extname]'` layout
     // nests by extension. A non-recursive `readdirSync` would test the SUBDIRECTORY NAME (e.g.
     // "fonts") against `hashPattern` instead of the files inside it — reporting a nonsense problem
     // while the real unhashed file underneath goes unexamined. `onReaddirError: 'throw'` (the
     // default) is what we want here: propagate so the outer catch reports `unreadable-assets-dir`.
-    assetFiles = walkFiles(assetsDir).map((abs) => relative(assetsDir, abs));
+    //
+    // UNCONDITIONAL catch, NARROWED to exactly this call (round 4 then round 5 review redesign):
+    // assetsDir is validated to be a real string on entry to verifyHeaders (assertStringOption),
+    // so whatever walkFiles/readdirSync raises about it is a fact about the build, not a caller
+    // bug. Round 3 tried to keep classifying the error here (isFsError) after already having been
+    // too broad (round 2) and too broad again in a different way (round 3's own ERR_ prefix
+    // exclusion, then a narrow allowlist that was simultaneously too inclusive AND too exclusive)
+    // — see ./errors.ts for why validating the input at the boundary instead makes this catch
+    // simple and correct. The `.map(relative)` below runs OUTSIDE this try, deliberately: it is a
+    // pure path computation over strings already known valid, not an fs fact, and lumping it in
+    // would be the exact try-too-wide shape round 5 found in cssBudget.ts/fontChain.ts.
+    walkedFiles = walkFiles(assetsDir);
   } catch (error) {
-    // UNCONDITIONAL catch (round 4 review redesign): assetsDir is validated to be a real string
-    // on entry to verifyHeaders (assertStringOption), so whatever walkFiles/readdirSync raises
-    // about it is a fact about the build, not a caller bug. Round 3 tried to keep classifying the
-    // error here (isFsError) after already having been too broad (round 2) and too broad again in
-    // a different way (round 3's own ERR_ prefix exclusion, then a narrow allowlist that was
-    // simultaneously too inclusive AND too exclusive) — see ./errors.ts for why validating the
-    // input at the boundary instead makes this catch simple and correct.
     problems.push({
       kind: 'unreadable-assets-dir',
       path: assetsDir,
@@ -152,6 +156,7 @@ function checkAssetsHashed(
     });
     return;
   }
+  const assetFiles = walkedFiles.map((abs) => relative(assetsDir, abs));
 
   if (assetFiles.length === 0) {
     // Fail closed (plan §2 constraint 4): a readable-but-empty assetsDir means the build produced
