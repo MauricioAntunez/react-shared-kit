@@ -211,16 +211,33 @@ describe('stripHtmlComments', () => {
 // input to everything before the unterminated `<!--` (the suspected cause) and only excuses the
 // divergence if both implementations agree on the truncated string.
 //
-// The harness asserts zero divergences of any OTHER shape, so a future regression is caught here
-// even if the targeted tests above are not touched — WITH ONE KNOWN, INHERENT LIMIT: a regression
-// in the ABRUPT-CLOSE TOKEN'S OWN handling path necessarily disappears once that token is
-// stripped out of the reduced string, so `isAbruptCloseCaused` will always classify it as "caused"
-// and excuse it — strip-and-recheck cannot see a bug that only exists inside the very thing it
-// strips. Demonstrated: reverting `indexOf('-->', openIndex + 2)` to the original round-2 bug
-// (`openIndex + 4`) is MASKED by this harness — `isAbruptCloseCaused` excuses every divergence it
-// causes — and is caught ONLY by the named unit tests earlier in this file (`"<!-->TAIL"`,
-// `"<!---> stuff -->"`), not by this harness. This is an inherent limitation of strip-and-recheck
-// for that one regression class, not a fixable bug in the classifier.
+// The harness catches divergences of other shapes, but it is NOT a complete net, and the two ways
+// it can stay green on a real regression are recorded here rather than left to be rediscovered.
+// Read this before treating a green harness as proof.
+//
+// LIMIT 1 — INHERENT, not fixable. A regression in the ABRUPT-CLOSE TOKEN'S OWN handling path
+// necessarily disappears once that token is stripped from the reduced string, so
+// `isAbruptCloseCaused` always classifies it as "caused" and excuses it. Strip-and-recheck cannot
+// see a bug that exists only inside the very thing it strips. Demonstrated: reverting
+// `indexOf('-->', openIndex + 2)` to the original round-2 bug (`openIndex + 4`) is MASKED here and
+// is caught ONLY by the named unit tests earlier in this file (`"<!-->TAIL"`,
+// `"<!---> stuff -->"`), which is why those tests exist as named cases and must not be folded into
+// the corpus.
+//
+// LIMIT 2 — FIXABLE, KNOWINGLY NOT FIXED (owner decision, 2026-08-30, round-5 review). The
+// `hasUnterminatedComment(reduced)` fallback inside `isAbruptCloseCaused` is an EXISTENCE check
+// where causality is required: if the reduced string merely contains an unterminated `<!--`
+// somewhere, the divergence is excused, even when the real cause is a corrupted well-formed
+// comment elsewhere in that same string. This is the third instance of the defect class the two
+// causal classifiers above were written to remove — same shape, one level down.
+// MEASURED under the closer-advance regression (`searchFrom = closeIndex + 3` -> `+ 2`) against
+// the shipped seed-42 corpus: 46 divergences excused through this branch, of which 18 are PROVABLY
+// false — `old === correctNew` for those inputs, so the divergence is entirely the regression's
+// doing. That mutation still fails overall (122 other inputs throw unmasked), so it is not a
+// silent-ship risk today; a future regression confined to this shape could be.
+// The fix is the same treatment applied above — truncate `reduced` before its unterminated `<!--`
+// and re-verify — and it was deliberately deferred rather than attempted a fourth time in one
+// session. If you are touching this file, fixing it is welcome.
 function oldRegexStrip(html: string): string {
   return html.replace(/<!--[\s\S]*?-->/g, '');
 }
@@ -233,8 +250,14 @@ function oldRegexStrip(html: string): string {
  * this return `true`, which would incorrectly excuse that unrelated divergence. Do NOT use this
  * directly to classify a divergence as category (a) — use `isUnterminatedCaused` for that. Kept
  * here only as a building block for `isAbruptCloseCaused`'s internal "is the reduced string now
- * genuinely unterminated" check, where the string has already been reduced by removing the
- * suspected cause, so a plain structural check on what remains is legitimate. */
+ * genuinely unterminated" check.
+ *
+ * THAT INTERNAL USE IS ALSO INCORRECT, and knowingly so — see LIMIT 2 in the harness comment
+ * above. An earlier version of this docstring argued the internal call was legitimate "because the
+ * string has already been reduced". That argument is FALSE and is recorded here so it is not made
+ * again: reducing removes only the abrupt-close tokens, so an unrelated corrupted comment and an
+ * unrelated unterminated tail can coexist in the reduced string exactly as they can in the
+ * original. Measured: 18 provably false excuses across the 500-input corpus. */
 function hasUnterminatedComment(html: string): boolean {
   let searchFrom = 0;
   for (;;) {
