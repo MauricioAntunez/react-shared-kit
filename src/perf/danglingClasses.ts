@@ -76,14 +76,16 @@ export type DanglingClassProblemKind =
   | 'unreadable-html'
   | 'unreadable-css'
   | 'dangling-class'
-  | 'oversized-class-name';
+  | 'oversized-class-name'
+  | 'unmatched-allowlist-file';
 
 export type DanglingClassProblem =
   | { kind: 'empty-input'; input: 'htmlFiles' | 'cssFiles'; detail: string }
   | { kind: 'unreadable-html'; html: string; detail: string }
   | { kind: 'unreadable-css'; css: string; detail: string }
   | { kind: 'dangling-class'; css: string; className: string; detail: string }
-  | { kind: 'oversized-class-name'; css: string; className: string; detail: string };
+  | { kind: 'oversized-class-name'; css: string; className: string; detail: string }
+  | { kind: 'unmatched-allowlist-file'; file: string; detail: string };
 
 /**
  * An allowlist entry scoped to one specific `cssFiles` entry (matched by exact string equality —
@@ -92,6 +94,11 @@ export type DanglingClassProblem =
  * `RegExp` entry cannot express that: it excuses the logical name globally, so allowlisting a
  * genuine `hiwViz` variant in `nav.module.css` would also silence a real cross-module `hiwViz`
  * bug in `page.module.css` (reproduced; see IMPORTANT 4 in the review-fixes plan).
+ *
+ * `file` must be spelled IDENTICALLY to its `cssFiles` entry — `findDanglingClasses` validates
+ * this up front (`unmatchedAllowlistFileProblems`) and reports `unmatched-allowlist-file` loudly
+ * when it isn't, rather than letting an absolute-vs-relative (or any other) spelling mismatch
+ * make the entry silently inert (IMPORTANT review finding, 2026-08-30).
  */
 export interface ScopedAllowlistEntry {
   /** Logical-name pattern, matched exactly as a bare `RegExp` entry would be. */
@@ -214,6 +221,42 @@ function logicalName(className: string, hashPattern: RegExp): string {
   const result = execHashPatternBounded(hashPattern, className);
   if (result === 'oversized' || result === null) return className;
   return result[1] ?? className;
+}
+
+/** Validates every `ScopedAllowlistEntry.file` against `cssFiles` up front (IMPORTANT review
+ * finding, 2026-08-30): `isAllowlisted` below matches `entry.file` against `cssFile` by exact
+ * string equality — whatever spelling the caller happens to pass. Reproduced: `cssFiles:
+ * [resolve(f)]` (absolute) against `allowlist: [{ pattern, file: 'nav.module.css' }]` (relative)
+ * makes the entry match nothing, ever; the class it was meant to excuse keeps reporting as
+ * dangling, with a message that tells the consumer to add it to `allowlist` — exactly what they
+ * already did. A config entry that can silently no-op is the failure class this entire gate
+ * exists to catch, so a spelling mismatch is reported here as its own LOUD, explicit problem
+ * (`unmatched-allowlist-file`) rather than left to manifest indirectly as an unrelated
+ * `dangling-class` finding that gives no hint the allowlist was ever involved. Chosen over
+ * normalizing both sides with `path.resolve` (which would only narrow absolute-vs-relative, not
+ * catch an outright typo in the filename) or comparing basenames (which would silently widen the
+ * match to any same-named file in a different directory) — validating that the entry as-typed
+ * matches SOMETHING in `cssFiles` catches the typo class this bug is, not just one shape of it. */
+function unmatchedAllowlistFileProblems(
+  allowlist: readonly AllowlistEntry[],
+  cssFiles: readonly string[],
+): DanglingClassProblem[] {
+  const knownCssFiles = new Set(cssFiles);
+  const problems: DanglingClassProblem[] = [];
+  for (const entry of allowlist) {
+    if (entry instanceof RegExp) continue;
+    if (knownCssFiles.has(entry.file)) continue;
+    problems.push({
+      kind: 'unmatched-allowlist-file',
+      file: entry.file,
+      detail:
+        `allowlist entry { pattern: ${String(entry.pattern)}, file: ${JSON.stringify(entry.file)} } ` +
+        'does not match any element of cssFiles (compared by exact string equality) — this entry ' +
+        'can never excuse a dangling class and will silently no-op. Likely an absolute/relative ' +
+        `path spelling mismatch. cssFiles: ${JSON.stringify(cssFiles)}.`,
+    });
+  }
+  return problems;
 }
 
 function isAllowlisted(
@@ -340,7 +383,7 @@ export function findDanglingClasses(
   // signal in that noise.
   if (emptyProblems.length > 0) return { ok: false, problems: emptyProblems };
 
-  const problems: DanglingClassProblem[] = [];
+  const problems: DanglingClassProblem[] = unmatchedAllowlistFileProblems(allowlist, cssFiles);
   const htmlClasses = collectHtmlClasses(htmlFiles, problems);
   for (const cssFile of cssFiles) {
     checkCssFile(cssFile, htmlClasses, allowlist, hashPattern, problems);

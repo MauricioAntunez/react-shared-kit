@@ -390,4 +390,63 @@ describe('findDanglingClasses', () => {
     const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
     expect(result.problems.some((p) => p.kind === 'oversized-class-name')).toBe(false);
   });
+
+  // --- IMPORTANT (review round 2026-08-30): a ScopedAllowlistEntry.file spelling mismatch must
+  // be LOUD, never a silent no-op ------------------------------------------------------------
+
+  it('RED (pre-fix behaviour would be silent): an absolute-vs-relative ScopedAllowlistEntry.file mismatch is reported, not swallowed', () => {
+    // Reproduced defect: cssFiles carries the absolute path (as resolve()/glob output commonly
+    // does) while the allowlist entry names the same file relatively. Exact-string matching in
+    // isAllowlisted made this entry permanently inert — the class it names never gets excused,
+    // and the resulting dangling-class message tells the consumer to add exactly the entry they
+    // already added, with no hint the allowlist was ever involved.
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 100%; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile], // absolute (join() against an absolute tmpdir root)
+      allowlist: [{ pattern: /^hiwViz$/, file: 'page.module.css' }], // relative spelling
+    });
+
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'unmatched-allowlist-file' && p.file === 'page.module.css',
+      ),
+    ).toBe(true);
+    // The class still reports dangling too — the fix does not paper over the underlying
+    // still-unexcused class, it adds a second, explicit signal naming the config mistake.
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'dangling-class' && p.className === '_hiwViz_18mh8_533',
+      ),
+    ).toBe(true);
+  });
+
+  it('GREEN: a ScopedAllowlistEntry.file spelled identically to its cssFiles entry excuses the class and raises no unmatched-allowlist-file problem', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 100%; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      allowlist: [{ pattern: /^hiwViz$/, file: cssFile }],
+    });
+
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  it('a bare RegExp allowlist entry is never checked against cssFiles (it has no file field)', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 100%; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      allowlist: [/^hiwViz$/],
+    });
+
+    expect(result.problems.some((p) => p.kind === 'unmatched-allowlist-file')).toBe(false);
+  });
 });
