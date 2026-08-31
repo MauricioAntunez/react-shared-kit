@@ -346,10 +346,22 @@ function urlsInSrcDeclaration(declarationValue: string): string[] {
   return urls;
 }
 
-/** Every `url(...)` inside every `src:` descriptor found in one `@font-face { ... }` block body. */
+/** Every `url(...)` inside every `src:` descriptor found in one `@font-face { ... }` block body.
+ *
+ * The trailing `;` is OPTIONAL (`src\s*:\s*([^;]+);?`) — CSS itself makes the semicolon after a
+ * block's LAST declaration optional, and every minifier omits it, so a real production
+ * stylesheet's final `src:` ends `...url(...)format("woff2")}` with no `;` before the `}`.
+ * Matching only when a `;` follows used to score that shape as zero urls, silently blinding this
+ * gate on minified CSS (fontchain plan `fontchain-minified-src.md`, K2). `[^;]+` still stops at
+ * the next `;` when one is present, so a `src:` followed by another declaration is unaffected.
+ *
+ * Known limit, unchanged by the above: `url(data:font/woff2;base64,...)` has a `;` INSIDE the
+ * value, so `[^;]+` truncates at it. This is benign for this gate's purpose — a data-URI face is
+ * inlined in the stylesheet itself, so it is never "discovered late" and cannot be a `deep-font`.
+ * Not closed here; a `url()`-aware split is a larger rewrite this fix does not authorise. */
 function urlsInFontFaceBody(body: string): string[] {
   const urls: string[] = [];
-  for (const srcMatch of body.matchAll(/src\s*:\s*([^;]+);/g)) {
+  for (const srcMatch of body.matchAll(/src\s*:\s*([^;]+);?/g)) {
     urls.push(...urlsInSrcDeclaration(srcMatch[1] ?? ''));
   }
   return urls;
