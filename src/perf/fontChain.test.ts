@@ -145,6 +145,36 @@ describe('verifyFontChain', () => {
     expect(verdicts[1]).toEqual({ label: variants[1]?.label, ok: false, deepFontUrl: '/x.woff2' });
   });
 
+  it('K5: reports EVERY src: descriptor in a block whose last one is unterminated (multi-descriptor minified)', () => {
+    // Raised independently by two review lenses on PR #7: the K1/K3 pair pins the single-`src:`
+    // shape, and the fix handles the multi-descriptor shape correctly today — but nothing pinned
+    // it. A legacy `src:url(...eot);` followed by an unterminated modern `src:` is the exact case
+    // where a future edit to the regex's loop or anchoring could silently re-break ONLY the last
+    // descriptor, which is the one carrying the woff2 every modern browser actually fetches.
+    // Whitespace before the closing `}` is folded in here for the same reason: `[^;]+` is
+    // whitespace-agnostic by construction, and that is a property worth pinning rather than
+    // re-deriving.
+    const nested = write(
+      'nested-multi.css',
+      `@font-face{font-family:X;src:url(/legacy.eot);src:url(/x.woff2) format("woff2")  }`,
+    );
+    const entry = write('entry-multi.css', `@import "./nested-multi.css";`);
+    const html = htmlWithStylesheet('index-multi.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({ './nested-multi.css': nested }),
+    });
+
+    expect(result.ok).toBe(false);
+    const fontUrls = result.problems
+      .filter((p) => p.kind === 'deep-font')
+      .map((p) => p.fontUrl)
+      .sort();
+    expect(fontUrls).toEqual(['/legacy.eot', '/x.woff2']);
+  });
+
   it('passes clean when the font is preloaded via <link rel="preload" as="font" crossorigin>', () => {
     const entry = write(
       'direct-preloaded.css',
