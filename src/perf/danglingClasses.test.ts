@@ -111,6 +111,26 @@ describe('findDanglingClasses', () => {
     ).toBe(true);
   });
 
+  // --- Round-2 review MUST-FIX #2: a genuinely unterminated <!-- must be reported, never silent -
+
+  it('RED: reports unterminated-html-comment instead of silently swallowing a genuinely dangling class after a truncated comment', () => {
+    // Before this fix: a class after an unterminated `<!--` is silently dropped from
+    // `htmlClasses`, same failure class as fontChain.ts's sibling defect. Here that means a class
+    // genuinely present on the page (just past the truncation point) never gets recorded as
+    // "seen" — the gate must at least name the truncation rather than pass or fail for the wrong
+    // reason.
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(
+      htmlFile,
+      '<div>ok</div><!-- never closed <div class="_hiwViz_18mh8_533">hi</div>',
+    );
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some((p) => p.kind === 'unterminated-html-comment' && p.html === htmlFile),
+    ).toBe(true);
+  });
+
   // --- LOW 8: commented-out CSS must not be reported as dangling (false positive) -------------
 
   it('does not report a commented-out CSS rule as dangling (LOW 8 false positive)', () => {

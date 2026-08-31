@@ -99,6 +99,7 @@ import { stripComments, stripHtmlComments } from './text.ts';
 export type FontChainProblemKind =
   | 'empty-input'
   | 'unreadable-html'
+  | 'unterminated-html-comment'
   | 'malformed-stylesheet-link'
   | 'unresolvable-stylesheet'
   | 'unreadable-stylesheet'
@@ -118,44 +119,89 @@ export type FontChainProblemKind =
  * unrelated documents — into one `''` bucket, because the flat type let every kind claim an
  * `entry` field that most kinds never populate.
  *
+ * ROUND-2 REVIEW IMPORTANT #5 — `subject: string` is GONE, replaced by a DISTINCT FIELD NAME PER
+ * KIND, following the precedent `DanglingClassProblem` in this same package already set (`html`,
+ * `css`, `input`, `className`, `file` — no shared generic field across its variants). Every
+ * variant of the PRIOR union carried `subject: string`, but that one name meant nine different
+ * things depending on `kind` — a sentinel, an html path, a raw tag, an unresolved href, a resolved
+ * path, an `@import` specifier, or a font URL. Reproduced: code that compiles cleanly and is
+ * silently wrong —
+ *
+ *     for (const p of problems) if ('entry' in p) paths.add(p.subject);
+ *
+ * — conflates a resolved stylesheet PATH (`unreadable-stylesheet`/`unparseable-font-face`), an
+ * `@import` SPECIFIER (`unresolvable-import`/`resolver-error`), and a font URL (`deep-font`) into
+ * one bucket, because all three kinds satisfied `'entry' in p` and all three used to name their
+ * very different payload the same way. The field names below are exhaustive and kind-specific:
+ *
+ *     empty-input               -> input: string        ('(htmlFiles)' | '(stylesheets)')
+ *     unreadable-html           -> html: string
+ *     unterminated-html-comment -> html: string
+ *     malformed-stylesheet-link -> tag: string
+ *     unresolvable-stylesheet   -> href: string
+ *     unreadable-stylesheet     -> stylesheet: string
+ *     unparseable-font-face     -> stylesheet: string
+ *     unresolvable-import       -> specifier: string
+ *     resolver-error            -> specifier: string
+ *     deep-font                 -> fontUrl: string
+ *
+ * A consumer can no longer write code that treats two of these as interchangeable without an
+ * explicit `kind` narrow first — TypeScript refuses `p.fontUrl` on anything but the `deep-font`
+ * variant, which is the property this fix exists to add.
+ *
  * The two shapes below are exhaustive over every kind this gate emits:
  *   - NO resolved stylesheet was ever walked (`empty-input`, `unreadable-html`,
- *     `malformed-stylesheet-link`, `unresolvable-stylesheet`) — no `entry`, no `chain`, because
- *     neither concept applies before a stylesheet is resolved.
+ *     `unterminated-html-comment`, `malformed-stylesheet-link`, `unresolvable-stylesheet`) — no
+ *     `entry`, no `chain`, because neither concept applies before a stylesheet is resolved.
  *   - A resolved stylesheet WAS walked (`unreadable-stylesheet`, `unresolvable-import`,
  *     `resolver-error`, `unparseable-font-face`, `deep-font`) — `entry` and `chain` both exist and
  *     are never empty; `chain` always includes at least the entry (`chain[0]`), even when the
  *     defect is the entry sheet itself.
  * A consumer narrows with `problem.kind === 'deep-font'` (etc.) exactly as it would any
- * discriminated union; TypeScript then refuses `problem.entry` on a variant that has none, which
- * is the property this fix exists to add.
+ * discriminated union.
  */
 export type FontChainProblem =
   | {
       kind: 'empty-input';
       /** The HTML document this problem was found while processing. Empty ONLY for the
-       * batch-level `empty-input` (`subject === '(htmlFiles)'`) — there is no document to name
-       * when the whole input list is empty. The per-document `empty-input` (`subject ===
+       * batch-level `empty-input` (`input === '(htmlFiles)'`) — there is no document to name
+       * when the whole input list is empty. The per-document `empty-input` (`input ===
        * '(stylesheets)'`, a document with zero `<link rel="stylesheet">` tags) names its
        * document. */
       document: string;
       /** `'(htmlFiles)'` for the batch-level case, `'(stylesheets)'` for the per-document case. */
-      subject: string;
+      input: string;
       message: string;
     }
   | {
       kind: 'unreadable-html';
       document: string;
       /** The unreadable HTML file's own path — same value as `document` for this kind. */
-      subject: string;
+      html: string;
+      message: string;
+    }
+  | {
+      kind: 'unterminated-html-comment';
+      /** The document containing the unterminated `<!--` (round-2 review MUST-FIX #2). Everything
+       * from that point to end of file was stripped as "inside the comment" and never examined
+       * for stylesheets, preload links, or inline `@font-face` blocks — a truncated build
+       * artifact must not read as a clean pass just because nothing else was found. */
+      document: string;
+      /** The document's own path — same value as `document` for this kind. */
+      html: string;
       message: string;
     }
   | {
       kind: 'malformed-stylesheet-link';
       document: string;
-      /** The raw `<link ...>` tag source, verbatim — there is no href to name the defect by, so
-       * the tag text itself is the only thing that lets a consumer find it in the built HTML. */
-      subject: string;
+      /** The raw `<link ...>` tag source — there is no href to name the defect by, so the tag
+       * text itself is the only thing that lets a consumer find it in the built HTML. Capped in
+       * length and control-character-sanitized (round-2 review MEDIUM #7): this text comes from
+       * FILE CONTENT, not consumer config, and is placed verbatim into `message` — an unbounded,
+       * unsanitized tag is both a ReDoS-adjacent size hazard and a log-forging surface if a
+       * consumer prints one problem per line (this package's own README suggests exactly that).
+       * See `sanitizeTagText` below. */
+      tag: string;
       message: string;
     }
   | {
@@ -163,7 +209,7 @@ export type FontChainProblem =
       document: string;
       /** The stylesheet `href` as written in the document (not a resolved path — resolution is
        * exactly what failed here). */
-      subject: string;
+      href: string;
       message: string;
     }
   | {
@@ -172,9 +218,9 @@ export type FontChainProblem =
       /** The resolved entry stylesheet path this problem was found while walking. */
       entry: string;
       /** The RESOLVED stylesheet path that could not be read. */
-      subject: string;
-      /** Import chain from the entry sheet (`chain[0]`) down to `subject`, as specifiers. Never
-       * empty — even a finding on the entry itself ships `chain = [entry]`. */
+      stylesheet: string;
+      /** Import chain from the entry sheet (`chain[0]`) down to `stylesheet`, as specifiers.
+       * Never empty — even a finding on the entry itself ships `chain = [entry]`. */
       chain: string[];
       message: string;
     }
@@ -183,7 +229,7 @@ export type FontChainProblem =
       document: string;
       entry: string;
       /** The `@import` specifier, as written, that did not resolve. */
-      subject: string;
+      specifier: string;
       chain: string[];
       message: string;
     }
@@ -192,7 +238,7 @@ export type FontChainProblem =
       document: string;
       entry: string;
       /** The `@import` specifier being resolved when `resolveImport` threw. */
-      subject: string;
+      specifier: string;
       chain: string[];
       message: string;
     }
@@ -202,7 +248,7 @@ export type FontChainProblem =
       entry: string;
       /** The RESOLVED stylesheet path holding the truncated `@font-face` block — never the
        * `@import` specifier that led there, so a consumer can open the exact file to fix. */
-      subject: string;
+      stylesheet: string;
       chain: string[];
       message: string;
     }
@@ -211,7 +257,7 @@ export type FontChainProblem =
       document: string;
       entry: string;
       /** The font `src` URL, reachable only through CSS. */
-      subject: string;
+      fontUrl: string;
       chain: string[];
       message: string;
     };
@@ -394,12 +440,47 @@ function extractPreloadFontUrls(html: string): Set<string> {
   return urls;
 }
 
+/** Maximum length of a raw `<link ...>` tag reported in `malformed-stylesheet-link.tag` (round-2
+ * review MEDIUM #7). `/<link\s[^>]*>/gi`'s `[^>]*` is unbounded — a build artifact with no closing
+ * `>` for a very long run makes the "one tag" match span megabytes, and that full raw text is
+ * placed verbatim into `message`/`tag` for a consumer to read. This is FILE CONTENT, the
+ * LESS-TRUSTED side of this package's own trust boundary (see `./errors.ts`'s reasoning for why
+ * `hashPattern`/`allowlist` are trusted but build content is not) — same reasoning already applied
+ * to `oversized-filename` (`headers.ts`) and `oversized-class-name` (`danglingClasses.ts`). 300 is
+ * generous for any real `<link>` tag (attribute values in real build output are short paths/URLs)
+ * while still bounding a pathological one. */
+const MAX_MALFORMED_TAG_LENGTH = 300;
+
+/** Collapses ASCII control characters (including newlines/carriage returns) in `tag` to a visible
+ * escape sequence, then caps the result to `MAX_MALFORMED_TAG_LENGTH` (round-2 review MEDIUM #7).
+ *
+ * WHY: `tag` is placed verbatim into `message` (`"<html> has a <link rel="stylesheet"> with no
+ * usable href (${tag}) — ..."`), and this package's own README suggests a consumer prints one
+ * problem per line. An embedded `\n` in a malformed tag would let a single build-content string
+ * forge extra "lines" into that output — a log-forging surface, reproduced with a tag containing
+ * an embedded newline landing byte-for-byte in a printed message. Escaping every control character
+ * (not just `\n`) closes the whole class, not just the one reproduced instance. Length is capped
+ * SEPARATELY, after escaping, so a very long but otherwise ordinary tag still gets a bounded
+ * message rather than embedding megabytes of raw HTML in a problem object. */
+function sanitizeTagText(tag: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control characters (including newline) to escape them — that IS the sanitization this function exists to perform.
+  const escaped = tag.replace(/[\x00-\x1f\x7f]/g, (ch) => {
+    if (ch === '\n') return '\\n';
+    if (ch === '\r') return '\\r';
+    if (ch === '\t') return '\\t';
+    return `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`;
+  });
+  if (escaped.length <= MAX_MALFORMED_TAG_LENGTH) return escaped;
+  return `${escaped.slice(0, MAX_MALFORMED_TAG_LENGTH)}… [truncated, ${escaped.length} chars]`;
+}
+
 interface StylesheetLinkScanResult {
   /** `href` values off every well-formed `<link rel="stylesheet" href="...">` in the document. */
   hrefs: string[];
   /** Raw tag source of every `<link rel="stylesheet">` found with NO usable `href` — a build
    * defect in its own right, not something the walk can silently skip (see module doc comment /
-   * `malformed-stylesheet-link`). */
+   * `malformed-stylesheet-link`). Sanitized via `sanitizeTagText` before being recorded (round-2
+   * review MEDIUM #7) — never the raw, unbounded, unescaped match. */
   malformedTags: string[];
 }
 
@@ -425,7 +506,7 @@ function extractStylesheetHrefs(html: string): StylesheetLinkScanResult {
     if (rel === undefined || !/\bstylesheet\b/i.test(rel)) continue;
     const href = attr(tag, 'href');
     if (href !== undefined) hrefs.push(href);
-    else malformedTags.push(tag);
+    else malformedTags.push(sanitizeTagText(tag));
   }
   return { hrefs, malformedTags };
 }
@@ -494,7 +575,7 @@ function readStylesheet(state: WalkState, path: string, chain: string[]): string
       kind: 'unreadable-stylesheet',
       document: state.document,
       entry: state.entryLabel,
-      subject: path,
+      stylesheet: path,
       chain,
       message: `could not read stylesheet "${path}": ${String(error)}`,
     });
@@ -521,7 +602,7 @@ function safeResolveImport(
       kind: 'resolver-error',
       document: state.document,
       entry: state.entryLabel,
-      subject: specifier,
+      specifier,
       chain: nextChain,
       message:
         `resolveImport threw while resolving @import "${specifier}" ` +
@@ -539,7 +620,7 @@ function safeResolveImport(
       kind: 'unresolvable-import',
       document: state.document,
       entry: state.entryLabel,
-      subject: specifier,
+      specifier,
       chain: nextChain,
       message:
         `@import "${specifier}" (chain: ${nextChain.join(' -> ')}) does not resolve to a file — ` +
@@ -590,7 +671,7 @@ function reportFontFaces(
       kind: 'unparseable-font-face',
       document: state.document,
       entry: state.entryLabel,
-      subject: path,
+      stylesheet: path,
       chain,
       message:
         `${unterminatedBlocks} @font-face block(s) in "${path}" (chain: ${chain.join(' -> ')}) ` +
@@ -605,7 +686,7 @@ function reportFontFaces(
       kind: 'deep-font',
       document: state.document,
       entry: state.entryLabel,
-      subject: url,
+      fontUrl: url,
       chain,
       message:
         `${REMEDY} This URL is reachable only after ${depth} stylesheet hop(s) from the ` +
@@ -679,7 +760,7 @@ function resolveStylesheetHref(
     problems.push({
       kind: 'unresolvable-stylesheet',
       document,
-      subject: href,
+      href,
       message: `resolveStylesheet threw while resolving "${href}" in "${document}": ${String(error)}`,
     });
     return undefined;
@@ -689,7 +770,7 @@ function resolveStylesheetHref(
     problems.push({
       kind: 'unresolvable-stylesheet',
       document,
-      subject: href,
+      href,
       message:
         `stylesheet href "${href}" in "${document}" does not resolve to a file — cannot verify ` +
         'whether it hides a font behind a nested parse.',
@@ -722,7 +803,7 @@ function processDocument(
     problems.push({
       kind: 'unreadable-html',
       document: htmlFile,
-      subject: htmlFile,
+      html: htmlFile,
       message: `could not read "${htmlFile}": ${String(error)}`,
     });
     return;
@@ -730,9 +811,31 @@ function processDocument(
 
   // CRITICAL 1 (font half): strip HTML comments BEFORE any of the three extractions below, so a
   // commented-out preload / stylesheet link / inline <style> is never treated as live.
+  //
+  // ROUND-2 REVIEW MUST-FIX #2: `unterminated` is checked and reported, never dropped on the
+  // floor. Before this fix, a genuinely unterminated `<!--` silently erased every stylesheet link
+  // after it — the per-document `empty-input` above never fired (the first stylesheet WAS read
+  // successfully), so a well-formed link followed by a truncated comment and more markup came
+  // back `ok: true` with zero problems, even though real defects (a hrefless link, an
+  // unresolvable stylesheet) were sitting right there, unseen. `stripHtmlComments`'s
+  // strip-to-end behaviour is still correct (it matches what a browser does); the SILENCE about
+  // it was the defect. Processing continues on `strippedHtml.text` regardless — whatever is
+  // visible BEFORE the truncation point is still real markup and still worth checking.
   const strippedHtml = internal.stripHtmlComments(html);
-  const exemptUrls = collectDocumentExemptUrls(strippedHtml);
-  const { hrefs: stylesheetHrefs, malformedTags } = extractStylesheetHrefs(strippedHtml);
+  if (strippedHtml.unterminated) {
+    problems.push({
+      kind: 'unterminated-html-comment',
+      document: htmlFile,
+      html: htmlFile,
+      message:
+        `"${htmlFile}" contains an unterminated <!-- HTML comment — every byte from that point ` +
+        'to the end of the file was treated as inside the comment and never examined for ' +
+        'stylesheets, preload links, or inline <style> blocks. A truncated build artifact must ' +
+        'not be allowed to read as a clean pass just because nothing else was found.',
+    });
+  }
+  const exemptUrls = collectDocumentExemptUrls(strippedHtml.text);
+  const { hrefs: stylesheetHrefs, malformedTags } = extractStylesheetHrefs(strippedHtml.text);
 
   // A `rel="stylesheet"` tag with no usable href is a build defect in its own right — reported
   // unconditionally, regardless of whether a sibling link in the same document is well-formed
@@ -741,7 +844,7 @@ function processDocument(
     problems.push({
       kind: 'malformed-stylesheet-link',
       document: htmlFile,
-      subject: tag,
+      tag,
       message:
         `"${htmlFile}" has a <link rel="stylesheet"> with no usable href (${tag}) — this tag ` +
         'cannot be walked for fonts and is reported rather than silently dropped.',
@@ -760,7 +863,7 @@ function processDocument(
       problems.push({
         kind: 'empty-input',
         document: htmlFile,
-        subject: '(stylesheets)',
+        input: '(stylesheets)',
         message:
           `"${htmlFile}" has no <link rel="stylesheet"> tags — there is nothing to verify is ` +
           'font-discoverable for this document, and that is being reported rather than treated ' +
@@ -807,7 +910,7 @@ export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChai
         {
           kind: 'empty-input',
           document: '',
-          subject: '(htmlFiles)',
+          input: '(htmlFiles)',
           message:
             'htmlFiles is empty — there is nothing to check for a preload or inline <style> ' +
             'that would exempt a font, and that is being reported rather than treated as a ' +

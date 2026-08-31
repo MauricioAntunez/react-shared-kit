@@ -90,9 +90,16 @@
  * late font on a different page that shares the same stylesheet.
  *
  * A consumer-supplied `hashPattern` (`findDanglingClasses`, `verifyHeaders`) is matched only after
- * the candidate token is bounded to `MAX_HASH_PATTERN_TOKEN_LENGTH` — an arbitrary regex run
- * against unbounded, build-derived text is a ReDoS surface the gate would otherwise hand a
- * consumer's own pattern. See `./errors.ts` for the cap and the measurement backing it.
+ * the candidate token is bounded to `MAX_HASH_PATTERN_TOKEN_LENGTH` — never handed to an arbitrary,
+ * consumer-supplied regex while still unbounded in length. CORRECTED WORDING (round-2 review
+ * MEDIUM #6 — an earlier version of this paragraph called the cap a ReDoS mitigation, which
+ * `./errors.ts` itself disproves): a 32-character token already takes 19.3 SECONDS against a
+ * catastrophically backtracking pattern, so a 128-char-bounded string is EXACTLY as much a ReDoS
+ * surface as an unbounded one — no length cap can bound regex execution TIME. The cap is a length
+ * sanity bound only; an over-cap token is reported as its own explicit problem
+ * (`oversized-class-name`/`oversized-filename`) rather than silently skipped or falsely matched.
+ * See `./errors.ts` for the cap, the measured backtracking curve, and why `hashPattern`/
+ * `allowlist` regexes are trusted (same author as the build script), unlike build content.
  */
 
 export type {

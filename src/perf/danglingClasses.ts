@@ -74,6 +74,7 @@ import { stripComments, stripHtmlComments } from './text.ts';
 export type DanglingClassProblemKind =
   | 'empty-input'
   | 'unreadable-html'
+  | 'unterminated-html-comment'
   | 'unreadable-css'
   | 'dangling-class'
   | 'oversized-class-name'
@@ -82,6 +83,11 @@ export type DanglingClassProblemKind =
 export type DanglingClassProblem =
   | { kind: 'empty-input'; input: 'htmlFiles' | 'cssFiles'; detail: string }
   | { kind: 'unreadable-html'; html: string; detail: string }
+  /** A genuinely unterminated `<!--` in `html` (round-2 review MUST-FIX #2, `fontChain.ts`'s
+   * sibling finding applied here too): every byte from that point to end of file was stripped as
+   * "inside the comment" and never scanned for `class="..."` attributes — a truncated build
+   * artifact must not silently read as "no dangling classes found" here either. */
+  | { kind: 'unterminated-html-comment'; html: string; detail: string }
   | { kind: 'unreadable-css'; css: string; detail: string }
   | { kind: 'dangling-class'; css: string; className: string; detail: string }
   | { kind: 'oversized-class-name'; css: string; className: string; detail: string }
@@ -323,8 +329,25 @@ function collectHtmlClasses(htmlFiles: string[], problems: DanglingClassProblem[
     // stripHtmlComments runs OUTSIDE the try above, deliberately (plan §3.2, CRITICAL 1 class
     // half): a commented-out `<div class="_hiwViz_18mh8_533">` is not live markup, and without
     // stripping it launders a genuinely dangling class to a clean pass.
+    //
+    // ROUND-2 REVIEW MUST-FIX #2: an unterminated `<!--` is reported, not silently swallowed. A
+    // truncated document would otherwise have every class after the stray `<!--` vanish from
+    // `htmlClasses` with no record — a class that genuinely IS used later in the file would then
+    // report as `dangling-class`, or worse, a real defect the truncation happened to hide would
+    // simply never surface. Collection continues on the visible (pre-truncation) portion either
+    // way, same reasoning as `fontChain.ts`'s sibling fix.
     const strippedHtml = stripHtmlComments(html);
-    for (const className of extractHtmlClasses(strippedHtml)) htmlClasses.add(className);
+    if (strippedHtml.unterminated) {
+      problems.push({
+        kind: 'unterminated-html-comment',
+        html: htmlFile,
+        detail:
+          `"${htmlFile}" contains an unterminated <!-- HTML comment — every byte from that ` +
+          'point to the end of the file was treated as inside the comment and never scanned ' +
+          'for class="..." attributes. A truncated build artifact must not read as a clean pass.',
+      });
+    }
+    for (const className of extractHtmlClasses(strippedHtml.text)) htmlClasses.add(className);
   }
   return htmlClasses;
 }
