@@ -182,15 +182,37 @@ describe('stripHtmlComments', () => {
 //       `openIndex + 2`, correctly closes ALL THREE forms as complete comments (see text.ts doc
 //       comment). This is a real, intentional divergence — not a bug — and it is exactly the shape
 //       of defect this whole review round is about.
-// The harness asserts zero divergences of any OTHER shape, so a future regression (a `+ 4`-style
-// bug, or anything else) is caught here even if the targeted tests above are not touched.
+// K8 round-3 review IMPORTANT: both classifiers below must be CAUSAL, not incidental. A bare
+// substring check ("does the input contain an abrupt-close token ANYWHERE") waves through any
+// divergence in a string that merely happens to also contain that token elsewhere — even when the
+// actual cause is a different bug entirely. Reproduced against `"<!-->X<!--Y-->Z"` with the real
+// closer-ADVANCE regression — `searchFrom = closeIndex + 2` instead of `+ 3`, which leaves the
+// closer's own `>` unconsumed. (NOT the opener SEARCH offset `indexOf('-->', openIndex + 2)`:
+// there, `+1` and `+2` are provably equivalent, since a `-->` match can only begin on a dash and
+// the two positions before it are `<` and `!`. The reviewer's write-up conflated the two; the
+// mutation was re-derived by execution before this comment was written.)
+// old="Z", new(buggy)=">X>Z" — the divergence is caused by the bug corrupting the ordinary comment
+// `<!--Y-->`, NOT by the abrupt-close form earlier in the string, yet the old substring-only
+// classifier waved it through as "intentional divergence (b)". Fixed by making the classification
+// causal: strip the candidate token(s) out of the input, re-run BOTH implementations on the
+// REDUCED string, and only excuse the divergence if they now agree there. If they still disagree
+// after removing the suspected cause, the divergence has some other cause and the harness fails.
+// The harness asserts zero divergences of any OTHER shape, so a future regression (that
+// closer-advance mutation, or anything else not genuinely explained by one of the two enumerated
+// causes) is caught here even if the targeted tests above are not touched. Scope note, measured:
+// for a BROAD regression this harness is not the only net -- the closer-advance mutation also
+// diverges on corpus inputs containing no abrupt-close token, so it fails even under the old
+// incidental classifier. What the causal classifier adds is coverage of a regression that
+// manifests ONLY on strings carrying an abrupt-close token, which the old one masked entirely.
 function oldRegexStrip(html: string): string {
   return html.replace(/<!--[\s\S]*?-->/g, '');
 }
 
 /** True when `html`, scanned left to right the same way `stripHtmlComments` does, contains an
- * opening `<!--` with no `-->` anywhere after it — i.e. genuinely unterminated. Used purely to
- * classify an observed divergence as intentional category (a). */
+ * opening `<!--` with no `-->` anywhere after it — i.e. genuinely unterminated. This already
+ * replicates the real scan (not an incidental substring check), so removing the offending `<!--`
+ * and re-checking is unnecessary here: the predicate IS the causal condition category (a) names.
+ * Used to classify an observed divergence as intentional category (a). */
 function hasUnterminatedComment(html: string): boolean {
   let searchFrom = 0;
   for (;;) {
@@ -202,14 +224,28 @@ function hasUnterminatedComment(html: string): boolean {
   }
 }
 
-/** True when `html` contains the literal substring `<!-->` or `<!--->` — the two abrupt-closing
- * forms the old regex cannot match (see the harness comment above). A plain substring check,
- * independent of either implementation, used only to classify an observed divergence as
- * intentional category (b). It does not need to be exact about every possible surrounding
- * context: it only needs to flag candidates so the harness can allow them; any divergence NOT
- * flagged by either classifier still fails the test. */
-function containsAbruptCloseForm(html: string): boolean {
-  return html.includes('<!-->') || html.includes('<!--->');
+/** True when an abrupt-close form (`<!-->` or `<!--->`) is CAUSALLY responsible for the divergence
+ * between the old and new implementations on `input` — not merely present somewhere in it. Removes
+ * every occurrence of both abrupt-close tokens from `input` and re-runs BOTH implementations on the
+ * reduced string:
+ *   - if they now agree, the abrupt-close form really was the (sole) remaining source of the
+ *     divergence and it is safe to excuse;
+ *   - if they still disagree but the reduced string is now genuinely unterminated (category (a) —
+ *     removing the abrupt-close text can expose a `<!--` that the abrupt-close form used to close),
+ *     that residual divergence is ALSO an enumerated intentional cause, so it is excused too;
+ *   - otherwise, recurse on the reduced string: removing one abrupt-close token can, by
+ *     concatenating its neighbours, expose ANOTHER one (`<!--` + `>` joining across the removed
+ *     span). This terminates because every recursive call removes at least one match, so the
+ *     string strictly shortens, and a string with no abrupt-close token left returns `false`
+ *     immediately.
+ * Only when none of these hold does the divergence have an unexplained cause, and the caller must
+ * not excuse it. */
+function isAbruptCloseCaused(input: string): boolean {
+  if (!input.includes('<!-->') && !input.includes('<!--->')) return false;
+  const reduced = input.split('<!-->').join('').split('<!--->').join('');
+  if (oldRegexStrip(reduced) === stripHtmlComments(reduced).text) return true;
+  if (hasUnterminatedComment(reduced)) return true;
+  return isAbruptCloseCaused(reduced);
 }
 
 describe('stripHtmlComments differential harness vs old regex', () => {
@@ -264,7 +300,7 @@ describe('stripHtmlComments differential harness vs old regex', () => {
         continue;
       }
 
-      if (containsAbruptCloseForm(input)) {
+      if (isAbruptCloseCaused(input)) {
         abruptCloseDivergences += 1;
         continue;
       }

@@ -1072,6 +1072,78 @@ describe('verifyFontChain', () => {
     expect(malformed?.tag).toContain('\\n');
   });
 
+  // --- K8 item 2a: pin the MAX_MALFORMED_TAG_LENGTH boundary (`<=` vs `<`) — only the 2,000,000
+  // char case above was covered, which cannot distinguish the boundary condition itself. 300 chars
+  // exactly must NOT be truncated; 301 must be.
+
+  it('a malformed tag of EXACTLY 300 chars (the cap) is reported verbatim, untruncated', () => {
+    const filler = 'x'.repeat(267); // prefix (31) + filler (267) + suffix (2) = 300
+    const html = write(
+      'index-cap-exact.html',
+      `<!doctype html><html><head><link rel="stylesheet" data-x="${filler}"></head><body>hi</body></html>`,
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: noStylesheets,
+      resolveImport: resolverFor({}),
+    });
+
+    const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
+    expect(malformed).toBeDefined();
+    expect(malformed?.tag.length).toBe(300);
+    expect(malformed?.tag).not.toContain('truncated');
+  });
+
+  it('a malformed tag of 301 chars (one over the cap) IS truncated', () => {
+    const filler = 'x'.repeat(268); // prefix (31) + filler (268) + suffix (2) = 301
+    const html = write(
+      'index-cap-over.html',
+      `<!doctype html><html><head><link rel="stylesheet" data-x="${filler}"></head><body>hi</body></html>`,
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: noStylesheets,
+      resolveImport: resolverFor({}),
+    });
+
+    const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
+    expect(malformed).toBeDefined();
+    // Truncated output is the first-300-chars slice plus a "… [truncated, N chars]" suffix, so it
+    // is LONGER than 300 raw chars, not shorter — the boundary this pins is "did truncation kick
+    // in at 301", not overall output length (see the 300-char sibling test for that assertion).
+    // The slice drops exactly the final character of the 301-char tag (the closing `>`).
+    const fullTag = `<link rel="stylesheet" data-x="${filler}">`;
+    expect(malformed?.tag).toContain('truncated');
+    expect(malformed?.tag.startsWith(fullTag.slice(0, 300))).toBe(true);
+    expect(malformed?.tag).not.toBe(fullTag);
+  });
+
+  // --- K8 item 2b: pin the `\t`-specific escape branch — without it, a tab falls through to the
+  // generic `\xNN` form (`\x09`) and nothing distinguishes the two, so a mutant removing the `\t`
+  // branch stays green.
+
+  it('escapes an embedded tab as the literal `\\t` form, not the generic `\\x09`', () => {
+    const html = write(
+      'index-tab-malformed-link.html',
+      '<!doctype html><html><head><link rel="stylesheet" data-x="a\tFAKE\tTAB"></head>' +
+        '<body>hi</body></html>',
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: noStylesheets,
+      resolveImport: resolverFor({}),
+    });
+
+    const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
+    expect(malformed).toBeDefined();
+    expect(malformed?.tag).not.toContain('\t');
+    expect(malformed?.tag).toContain('\\t');
+    expect(malformed?.tag).not.toContain('\\x09');
+  });
+
   // --- K5 item 2: FontChainProblem is a discriminated union, not a flat interface with prose-only
   // field validity. This is a TYPE-ONLY regression guard (it.skip: never executed, only
   // type-checked by `npm run typecheck` / `tsc`) proving the consumer footgun described in the
