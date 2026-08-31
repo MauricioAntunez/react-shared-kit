@@ -344,4 +344,50 @@ describe('findDanglingClasses', () => {
     });
     expect(result).toEqual({ ok: true, problems: [] });
   });
+
+  // --- HIGH 3: hashPattern is consumer-supplied and must be bounded before matching ---------
+
+  it('RED: reports oversized-class-name, not dangling-class, for a selector token over the cap — and never hangs even against a pathological hashPattern', () => {
+    // A 200-char class name is far over MAX_HASH_PATTERN_TOKEN_LENGTH (128). /^(a+)+$/ is a
+    // classic catastrophic-backtracking pattern — the measured evidence (see errors.ts) is 51.9s
+    // against a mere 36-char token. If this selector token ever reached hashPattern.test(), this
+    // test would hang for a very long time. The cap must reject it BEFORE the regex ever runs.
+    // Trailing 'b' (not 'a') is deliberate: a pure run of 'a' would MATCH /^(a+)+$/ immediately
+    // with no backtracking at all — the catastrophic case only triggers when the match ultimately
+    // FAILS, forcing the engine to exhaust every way to partition the 'a' run first.
+    const oversizedName = `${'a'.repeat(199)}b`;
+    writeFileSync(cssFile, `.${oversizedName} { width: 100%; }`);
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+
+    const start = Date.now();
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      hashPattern: /^(a+)+$/,
+    });
+    const elapsedMs = Date.now() - start;
+
+    // Generous, not tight (see plan §K3): this only needs to prove "did not hang", not pin a
+    // specific millisecond figure that the next person refreshes away.
+    expect(elapsedMs).toBeLessThan(5000);
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'oversized-class-name' && p.className === oversizedName,
+      ),
+    ).toBe(true);
+    // Not silently passed either: the oversized selector must never ALSO be reported as
+    // dangling-class (that would claim hashPattern was actually run against it, which it never
+    // was).
+    expect(
+      result.problems.some((p) => p.kind === 'dangling-class' && p.className === oversizedName),
+    ).toBe(false);
+  });
+
+  it('GREEN: a class name at or under the cap is tested against hashPattern normally', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 100%; }');
+    writeFileSync(htmlFile, '<div class="_hiwViz_18mh8_533">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.problems.some((p) => p.kind === 'oversized-class-name')).toBe(false);
+  });
 });

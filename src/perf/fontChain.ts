@@ -94,6 +94,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { assertResolverReturn, assertStringOption } from './errors.ts';
+import { stripComments, stripHtmlComments } from './text.ts';
 
 export type FontChainProblemKind =
   | 'empty-input'
@@ -177,30 +178,23 @@ const REMEDY =
   'blanket fix — on a page with several faces on the critical path, that trades a discovery delay ' +
   'for a bandwidth cost on the SAME critical path, which is worse.';
 
-/** Strips `/* ... *\/` comments so a commented-out `@import`/`@font-face` is never treated as live. */
-function stripComments(css: string): string {
-  return css.replace(/\/\*[\s\S]*?\*\//g, '');
-}
-
-/** Strips `<!-- ... -->` comments so a commented-out `<link rel="preload">`/`<link
- * rel="stylesheet">`/inline `<style>` is never treated as live (CRITICAL 1, font half). Applied to
- * the whole document text before ANY of `extractStylesheetHrefs`, `extractPreloadFontUrls` or
- * `extractInlineFontFaceUrls` run — leftover debug markup silencing a real defect is the same error
- * class this whole gate exists to catch. Shared with `danglingClasses.ts` via `internal` below
- * rather than re-implemented there (DRY — two copies is how one gets fixed and the other rots). */
-function stripHtmlComments(html: string): string {
-  return html.replace(/<!--[\s\S]*?-->/g, '');
-}
-
 /**
  * Test-only indirection point (module export, NOT re-exported from `./index.ts`'s barrel — same
  * pattern as `./errors.ts`'s helpers). `stripComments`/`stripHtmlComments` are pure regex
  * transforms with no external module boundary to intercept, unlike `brotliCompressSync` in
  * `cssBudget.ts`, so this object exists purely so a test can substitute a throwing implementation
  * and prove the round 5 fix: a `stripComments` failure propagates uncaught rather than being
- * reported as `unreadable-stylesheet` about a file that WAS read successfully. Also the shared
- * import point `danglingClasses.ts` uses for both helpers, rather than declaring its own copies.
- * Never mutated outside a test.
+ * reported as `unreadable-stylesheet` about a file that WAS read successfully.
+ *
+ * The two functions themselves live in `./text.ts` (K3 layering fix, 2026-08-30): production
+ * code in a sibling module (`danglingClasses.ts`) must not import a test-only seam from THIS
+ * module, and the destructuring shape it previously used
+ * (`const { stripComments, stripHtmlComments } = internal`) captured a snapshot at module load,
+ * so substituting `internal.stripComments` in a test could never have affected
+ * `danglingClasses.ts` even though the seam looked shared. `danglingClasses.ts` now imports the
+ * plain functions from `./text.ts` directly; only THIS module still funnels its own calls through
+ * `internal` (see `readStylesheet` below), and only THIS module's tests substitute it. Never
+ * mutated outside a test.
  */
 export const internal = { stripComments, stripHtmlComments };
 

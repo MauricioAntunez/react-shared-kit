@@ -1,8 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { assertStringOption } from './errors.ts';
-import { internal } from './fontChain.ts';
-
-const { stripComments, stripHtmlComments } = internal;
+import {
+  assertStringOption,
+  execHashPatternBounded,
+  MAX_HASH_PATTERN_TOKEN_LENGTH,
+  testHashPatternBounded,
+} from './errors.ts';
+import { stripComments, stripHtmlComments } from './text.ts';
 
 /**
  * `findDanglingClasses` — detects a CSS-Modules selector that compiles cleanly and matches
@@ -72,13 +75,15 @@ export type DanglingClassProblemKind =
   | 'empty-input'
   | 'unreadable-html'
   | 'unreadable-css'
-  | 'dangling-class';
+  | 'dangling-class'
+  | 'oversized-class-name';
 
 export type DanglingClassProblem =
   | { kind: 'empty-input'; input: 'htmlFiles' | 'cssFiles'; detail: string }
   | { kind: 'unreadable-html'; html: string; detail: string }
   | { kind: 'unreadable-css'; css: string; detail: string }
-  | { kind: 'dangling-class'; css: string; className: string; detail: string };
+  | { kind: 'dangling-class'; css: string; className: string; detail: string }
+  | { kind: 'oversized-class-name'; css: string; className: string; detail: string };
 
 /**
  * An allowlist entry scoped to one specific `cssFiles` entry (matched by exact string equality —
@@ -159,20 +164,56 @@ function extractHtmlClasses(html: string): Set<string> {
 }
 
 /** Every hashed class name (per `hashPattern`) that appears as a selector token anywhere in `css`,
- * deduplicated. */
-function extractHashedClasses(css: string, hashPattern: RegExp): string[] {
+ * deduplicated.
+ *
+ * `hashPattern` is CONSUMER-SUPPLIED (HIGH 3 review finding, 2026-08-30): tested here via
+ * `testHashPatternBounded` rather than a bare `hashPattern.test(...)`, so a selector token over
+ * `MAX_HASH_PATTERN_TOKEN_LENGTH` is never handed to an arbitrary regex. An over-cap token is
+ * reported as `oversized-class-name` and excluded from the returned set — NOT silently dropped
+ * (that would make it vanish from this gate's attention with no record) and NOT treated as a
+ * match (it was never actually verified against `hashPattern`). See ./errors.ts. */
+function extractHashedClasses(
+  css: string,
+  hashPattern: RegExp,
+  cssFile: string,
+  problems: DanglingClassProblem[],
+): string[] {
   const found = new Set<string>();
   for (const match of css.matchAll(CLASS_SELECTOR_TOKEN)) {
     const name = match[1];
-    if (name !== undefined && hashPattern.test(name)) found.add(name);
+    if (name === undefined) continue;
+    const result = testHashPatternBounded(hashPattern, name);
+    if (result === 'oversized') {
+      problems.push({
+        kind: 'oversized-class-name',
+        css: cssFile,
+        className: name,
+        detail:
+          `a selector token in "${cssFile}" is ${name.length} characters — over the ` +
+          `${MAX_HASH_PATTERN_TOKEN_LENGTH}-character cap this gate enforces before testing a ` +
+          'token against hashPattern (an arbitrary, consumer-supplied regex, which is never safe ' +
+          'to run against an unbounded string). This selector was never actually checked for a ' +
+          'dangling match.',
+      });
+      continue;
+    }
+    if (result === 'match') found.add(name);
   }
   return [...found];
 }
 
 /** The hash-independent part of a hashed class name, per `hashPattern`'s capture group — falls
- * back to the full name when the pattern has none. */
+ * back to the full name when the pattern has none. Bounded the same way as
+ * `extractHashedClasses` (HIGH 3): its only current caller passes a class name already
+ * cap-checked by `extractHashedClasses` (which never adds an oversized name to what it returns),
+ * so the `'oversized'` branch is unreachable today — kept so this function cannot become a second,
+ * unguarded path to the same regex if it is ever called with unchecked input later. Falling back
+ * to the raw `className` on that branch mirrors the existing no-capture-group fallback: it only
+ * ever degrades allowlist precision, it never hides a dangling class from being reported. */
 function logicalName(className: string, hashPattern: RegExp): string {
-  return hashPattern.exec(className)?.[1] ?? className;
+  const result = execHashPatternBounded(hashPattern, className);
+  if (result === 'oversized' || result === null) return className;
+  return result[1] ?? className;
 }
 
 function isAllowlisted(
@@ -269,7 +310,7 @@ function checkCssFile(
   // it is a pure transform over text already read successfully, so a failure in it is a bug in
   // this module, not a build defect to misreport as unreadable-css.
   const stripped = stripComments(css);
-  for (const className of extractHashedClasses(stripped, hashPattern)) {
+  for (const className of extractHashedClasses(stripped, hashPattern, cssFile, problems)) {
     if (htmlClasses.has(className)) continue;
     if (isAllowlisted(className, hashPattern, allowlist, cssFile)) continue;
     problems.push({

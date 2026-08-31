@@ -39,7 +39,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { relative } from 'node:path';
 import { walkFiles } from '../image/check/walk.ts';
-import { assertStringOption } from './errors.ts';
+import {
+  assertStringOption,
+  MAX_HASH_PATTERN_TOKEN_LENGTH,
+  testHashPatternBounded,
+} from './errors.ts';
 
 export type HeadersProblemKind =
   | 'missing-headers-file'
@@ -47,6 +51,7 @@ export type HeadersProblemKind =
   | 'unreadable-assets-dir'
   | 'empty-input'
   | 'unhashed-asset'
+  | 'oversized-filename'
   | 'invalid-immutable-prefix'
   | 'unauthorized-immutable'
   | 'html-rule';
@@ -60,7 +65,8 @@ export interface HeadersProblem {
    *   - `unreadable-assets-dir` — `assetsDir`, a DIRECTORY, not a file.
    *   - `empty-input` — either `assetsDir` (the readable-but-empty-directory case) or
    *     `headersFile` (the parses-to-0-rules case); which one fired determines which this is.
-   *   - `unhashed-asset` — `${assetsDir}/${relPath}`, one FILE under `assetsDir`.
+   *   - `unhashed-asset`, `oversized-filename` — `${assetsDir}/${relPath}`, one FILE under
+   *     `assetsDir`.
    *   - `invalid-immutable-prefix` — the raw, as-passed `immutablePrefixes` OPTION STRING that
    *     was rejected, not a filesystem path at all.
    *   - `unauthorized-immutable`, `html-rule` — `rule.path`, a RULE PATH parsed out of
@@ -176,17 +182,38 @@ function checkAssetsHashed(
   // Matched against the FILENAME only (not the nested relative path) — the hash pattern describes
   // one path segment (`<name>-<hash>.<ext>`), and a directory component like `fonts/` must never
   // participate in the hash test.
-  const unhashed = assetFiles.filter(
-    (relPath) => !hashPattern.test(relPath.split('/').pop() ?? relPath),
-  );
-  for (const relPath of unhashed) {
-    problems.push({
-      kind: 'unhashed-asset',
-      path: `${assetsDir}/${relPath}`,
-      detail:
-        `"${relPath}" under "${assetsDir}" does not carry a content hash — an immutable rule ` +
-        'covering this path would cache it forever with no way to bust the cache.',
-    });
+  //
+  // `hashPattern` is CONSUMER-SUPPLIED (HIGH 3 review finding): tested here via
+  // `testHashPatternBounded` rather than a bare `hashPattern.test(...)`, so a filename over
+  // `MAX_HASH_PATTERN_TOKEN_LENGTH` is never handed to an arbitrary regex. An over-cap filename is
+  // reported as its own `oversized-filename` problem — never folded into `unhashed-asset` (that
+  // would claim the pattern was actually checked against it) and never silently dropped (that
+  // would make the file vanish from this gate's attention entirely). See ./errors.ts.
+  for (const relPath of assetFiles) {
+    const name = relPath.split('/').pop() ?? relPath;
+    const result = testHashPatternBounded(hashPattern, name);
+    if (result === 'oversized') {
+      problems.push({
+        kind: 'oversized-filename',
+        path: `${assetsDir}/${relPath}`,
+        detail:
+          `"${relPath}" under "${assetsDir}" has a ${name.length}-character filename — over the ` +
+          `${MAX_HASH_PATTERN_TOKEN_LENGTH}-character cap this gate enforces before testing a ` +
+          'filename against hashPattern (an arbitrary, consumer-supplied regex, which is never ' +
+          'safe to run against an unbounded string). This file was never actually checked for a ' +
+          'content hash.',
+      });
+      continue;
+    }
+    if (result === 'no-match') {
+      problems.push({
+        kind: 'unhashed-asset',
+        path: `${assetsDir}/${relPath}`,
+        detail:
+          `"${relPath}" under "${assetsDir}" does not carry a content hash — an immutable rule ` +
+          'covering this path would cache it forever with no way to bust the cache.',
+      });
+    }
   }
 }
 
