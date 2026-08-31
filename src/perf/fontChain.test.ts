@@ -151,9 +151,12 @@ describe('verifyFontChain', () => {
     // it. A legacy `src:url(...eot);` followed by an unterminated modern `src:` is the exact case
     // where a future edit to the regex's loop or anchoring could silently re-break ONLY the last
     // descriptor, which is the one carrying the woff2 every modern browser actually fetches.
-    // Whitespace before the closing `}` is folded in here for the same reason: `[^;]+` is
-    // whitespace-agnostic by construction, and that is a property worth pinning rather than
-    // re-deriving.
+    // The trailing whitespace before the closing `}` is NOT independently pinned — it rides
+    // along in the fixture. The PR #7 re-review looked for a mutation K5 catches *because of*
+    // that whitespace and found none: `[^;]+` runs to end-of-body regardless of what trails, and
+    // the `url(...)` search inside the captured group is whitespace-agnostic by construction, so
+    // no code path makes the outcome depend on it. Kept because production CSS does contain it,
+    // and said plainly here rather than claimed as coverage this test does not provide.
     const nested = write(
       'nested-multi.css',
       `@font-face{font-family:X;src:url(/legacy.eot);src:url(/x.woff2) format("woff2")  }`,
