@@ -85,6 +85,99 @@ describe('verifyFontChain', () => {
     expect(problem?.message).toContain('must never be imported via CSS');
   });
 
+  it('K1 RED: reports deep-font for a chained face whose LAST src: declaration has no trailing semicolon (minified CSS)', () => {
+    // Fontchain plan (docs/plans/fontchain-minified-src.md), K1. CSS makes the `;` after a
+    // block's last declaration optional, and every minifier omits it — so a real production
+    // stylesheet ends `...url(...)format("woff2")}` with no `;` before the `}`. Before the K2
+    // fix, `urlsInFontFaceBody`'s `/src\s*:\s*([^;]+);/g` required that trailing `;` to match at
+    // all, so this exact shape contributed ZERO urls and the font was never discovered — the gate
+    // returned a false `{ ok: true, problems: [] }` on the one CSS shape every real build ships.
+    const nested = write(
+      'nested-minified.css',
+      `@font-face{font-family:X;src:url(/x.woff2) format("woff2")}`,
+    );
+    const entry = write('entry-minified.css', `@import "./nested-minified.css";`);
+    const html = htmlWithStylesheet('index-minified.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({ './nested-minified.css': nested }),
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'deep-font');
+    expect(problem).toBeDefined();
+    expect(problem?.fontUrl).toBe('/x.woff2');
+  });
+
+  it('K3: reaches the SAME verdict whether or not the last src: declaration in a @font-face block carries a trailing semicolon', () => {
+    // Mechanical pairing (not narrative) per the plan's K3: both fixtures below differ ONLY in
+    // the trailing `;` before the block's closing `}`, and must produce the identical shape of
+    // finding — so a future edit that re-breaks either direction goes red here.
+    const variants = [
+      {
+        label: 'no trailing semicolon (minified)',
+        body: `@font-face{font-family:X;src:url(/x.woff2) format("woff2")}`,
+      },
+      {
+        label: 'trailing semicolon (pretty-printed)',
+        body: `@font-face{font-family:X;src:url(/x.woff2) format("woff2");}`,
+      },
+    ];
+
+    const verdicts = variants.map(({ label, body }, i) => {
+      const nested = write(`nested-k3-${i}.css`, body);
+      const entry = write(`entry-k3-${i}.css`, `@import "./nested-k3-${i}.css";`);
+      const html = htmlWithStylesheet(`index-k3-${i}.html`);
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+        resolveImport: resolverFor({ [`./nested-k3-${i}.css`]: nested }),
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'deep-font');
+      return { label, ok: result.ok, deepFontUrl: problem?.fontUrl };
+    });
+
+    expect(verdicts[0]).toEqual({ label: variants[0]?.label, ok: false, deepFontUrl: '/x.woff2' });
+    expect(verdicts[1]).toEqual({ label: variants[1]?.label, ok: false, deepFontUrl: '/x.woff2' });
+  });
+
+  it('K5: reports EVERY src: descriptor in a block whose last one is unterminated (multi-descriptor minified)', () => {
+    // Raised independently by two review lenses on PR #7: the K1/K3 pair pins the single-`src:`
+    // shape, and the fix handles the multi-descriptor shape correctly today — but nothing pinned
+    // it. A legacy `src:url(...eot);` followed by an unterminated modern `src:` is the exact case
+    // where a future edit to the regex's loop or anchoring could silently re-break ONLY the last
+    // descriptor, which is the one carrying the woff2 every modern browser actually fetches.
+    // The trailing whitespace before the closing `}` is NOT independently pinned — it rides
+    // along in the fixture. The PR #7 re-review looked for a mutation K5 catches *because of*
+    // that whitespace and found none: `[^;]+` runs to end-of-body regardless of what trails, and
+    // the `url(...)` search inside the captured group is whitespace-agnostic by construction, so
+    // no code path makes the outcome depend on it. Kept because production CSS does contain it,
+    // and said plainly here rather than claimed as coverage this test does not provide.
+    const nested = write(
+      'nested-multi.css',
+      `@font-face{font-family:X;src:url(/legacy.eot);src:url(/x.woff2) format("woff2")  }`,
+    );
+    const entry = write('entry-multi.css', `@import "./nested-multi.css";`);
+    const html = htmlWithStylesheet('index-multi.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({ './nested-multi.css': nested }),
+    });
+
+    expect(result.ok).toBe(false);
+    const fontUrls = result.problems
+      .filter((p) => p.kind === 'deep-font')
+      .map((p) => p.fontUrl)
+      .sort();
+    expect(fontUrls).toEqual(['/legacy.eot', '/x.woff2']);
+  });
+
   it('passes clean when the font is preloaded via <link rel="preload" as="font" crossorigin>', () => {
     const entry = write(
       'direct-preloaded.css',
