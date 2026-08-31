@@ -182,37 +182,59 @@ describe('stripHtmlComments', () => {
 //       `openIndex + 2`, correctly closes ALL THREE forms as complete comments (see text.ts doc
 //       comment). This is a real, intentional divergence — not a bug — and it is exactly the shape
 //       of defect this whole review round is about.
-// K8 round-3 review IMPORTANT: both classifiers below must be CAUSAL, not incidental. A bare
-// substring check ("does the input contain an abrupt-close token ANYWHERE") waves through any
-// divergence in a string that merely happens to also contain that token elsewhere — even when the
-// actual cause is a different bug entirely. Reproduced against `"<!-->X<!--Y-->Z"` with the real
+// K8 round-3 review IMPORTANT, extended round-4: BOTH classifiers (`isUnterminatedCaused` and
+// `isAbruptCloseCaused`) must be CAUSAL, not incidental. A bare substring/structural check ("does
+// the input contain the suspected token/shape ANYWHERE") waves through any divergence in a string
+// that merely happens to also contain that token elsewhere — even when the actual cause is a
+// different bug entirely.
+//
+// Reproduced for the abrupt-close classifier against `"<!-->X<!--Y-->Z"` with the real
 // closer-ADVANCE regression — `searchFrom = closeIndex + 2` instead of `+ 3`, which leaves the
 // closer's own `>` unconsumed. (NOT the opener SEARCH offset `indexOf('-->', openIndex + 2)`:
 // there, `+1` and `+2` are provably equivalent, since a `-->` match can only begin on a dash and
 // the two positions before it are `<` and `!`. The reviewer's write-up conflated the two; the
 // mutation was re-derived by execution before this comment was written.)
 // old="Z", new(buggy)=">X>Z" — the divergence is caused by the bug corrupting the ordinary comment
-// `<!--Y-->`, NOT by the abrupt-close form earlier in the string, yet the old substring-only
-// classifier waved it through as "intentional divergence (b)". Fixed by making the classification
-// causal: strip the candidate token(s) out of the input, re-run BOTH implementations on the
-// REDUCED string, and only excuse the divergence if they now agree there. If they still disagree
-// after removing the suspected cause, the divergence has some other cause and the harness fails.
-// The harness asserts zero divergences of any OTHER shape, so a future regression (that
-// closer-advance mutation, or anything else not genuinely explained by one of the two enumerated
-// causes) is caught here even if the targeted tests above are not touched. Scope note, measured:
-// for a BROAD regression this harness is not the only net -- the closer-advance mutation also
-// diverges on corpus inputs containing no abrupt-close token, so it fails even under the old
-// incidental classifier. What the causal classifier adds is coverage of a regression that
-// manifests ONLY on strings carrying an abrupt-close token, which the old one masked entirely.
+// `<!--Y-->`, NOT by the abrupt-close form earlier in the string, yet a substring-only classifier
+// waves it through as "intentional divergence (b)". Fixed by making the classification causal:
+// strip the candidate token(s) out of the input, re-run BOTH implementations on the REDUCED
+// string, and only excuse the divergence if they now agree there.
+//
+// Round-4 review MUST-FIX: `hasUnterminatedComment` had the identical defect for category (a). It
+// answers "does this string contain a genuinely-unterminated `<!--` ANYWHERE", not "is that
+// unterminated comment the CAUSE of THIS divergence" — replicating the real left-to-right scan
+// makes the DETECTION accurate, it says nothing about CAUSATION. Reproduced against
+// `"<!--A-->B<!--UNCLOSED"` with the closer-advance mutation (`+ 3` -> `+ 2`): the mutation
+// corrupts the LEADING, well-formed `<!--A-->`, but the unrelated trailing `<!--UNCLOSED` made
+// `hasUnterminatedComment` return `true` regardless, excusing a divergence it had nothing to do
+// with. Fixed the same way as the abrupt-close classifier: `isUnterminatedCaused` truncates the
+// input to everything before the unterminated `<!--` (the suspected cause) and only excuses the
+// divergence if both implementations agree on the truncated string.
+//
+// The harness asserts zero divergences of any OTHER shape, so a future regression is caught here
+// even if the targeted tests above are not touched — WITH ONE KNOWN, INHERENT LIMIT: a regression
+// in the ABRUPT-CLOSE TOKEN'S OWN handling path necessarily disappears once that token is
+// stripped out of the reduced string, so `isAbruptCloseCaused` will always classify it as "caused"
+// and excuse it — strip-and-recheck cannot see a bug that only exists inside the very thing it
+// strips. Demonstrated: reverting `indexOf('-->', openIndex + 2)` to the original round-2 bug
+// (`openIndex + 4`) is MASKED by this harness — `isAbruptCloseCaused` excuses every divergence it
+// causes — and is caught ONLY by the named unit tests earlier in this file (`"<!-->TAIL"`,
+// `"<!---> stuff -->"`), not by this harness. This is an inherent limitation of strip-and-recheck
+// for that one regression class, not a fixable bug in the classifier.
 function oldRegexStrip(html: string): string {
   return html.replace(/<!--[\s\S]*?-->/g, '');
 }
 
 /** True when `html`, scanned left to right the same way `stripHtmlComments` does, contains an
- * opening `<!--` with no `-->` anywhere after it — i.e. genuinely unterminated. This already
- * replicates the real scan (not an incidental substring check), so removing the offending `<!--`
- * and re-checking is unnecessary here: the predicate IS the causal condition category (a) names.
- * Used to classify an observed divergence as intentional category (a). */
+ * opening `<!--` with no `-->` anywhere after it — i.e. genuinely unterminated somewhere in the
+ * string. RAW STRUCTURAL DETECTOR ONLY — replicating the real scan makes the DETECTION accurate,
+ * it says nothing about CAUSATION. An unrelated unterminated `<!--` trailing far from the actual
+ * point of divergence (e.g. a regression corrupting an earlier, well-formed comment) still makes
+ * this return `true`, which would incorrectly excuse that unrelated divergence. Do NOT use this
+ * directly to classify a divergence as category (a) — use `isUnterminatedCaused` for that. Kept
+ * here only as a building block for `isAbruptCloseCaused`'s internal "is the reduced string now
+ * genuinely unterminated" check, where the string has already been reduced by removing the
+ * suspected cause, so a plain structural check on what remains is legitimate. */
 function hasUnterminatedComment(html: string): boolean {
   let searchFrom = 0;
   for (;;) {
@@ -222,6 +244,32 @@ function hasUnterminatedComment(html: string): boolean {
     if (close === -1) return true;
     searchFrom = close + 3;
   }
+}
+
+/** True when a genuinely unterminated `<!--` is CAUSALLY responsible for the divergence between
+ * the old and new implementations on `input` — not merely present somewhere in it. Finds the
+ * position of the (first) unterminated `<!--` via the same left-to-right scan `stripHtmlComments`
+ * uses, truncates `input` to everything BEFORE that position (removing the suspected cause — the
+ * unterminated tail, exactly as `isAbruptCloseCaused` removes its suspected cause), and re-runs
+ * BOTH implementations on the truncated string. The divergence is excused only if they now agree.
+ * If `input` has no unterminated `<!--` at all, or if the two implementations still disagree after
+ * truncation, this returns `false` and the caller must not excuse the divergence. */
+function isUnterminatedCaused(input: string): boolean {
+  let searchFrom = 0;
+  let unterminatedAt = -1;
+  for (;;) {
+    const open = input.indexOf('<!--', searchFrom);
+    if (open === -1) break;
+    const close = input.indexOf('-->', open + 2);
+    if (close === -1) {
+      unterminatedAt = open;
+      break;
+    }
+    searchFrom = close + 3;
+  }
+  if (unterminatedAt === -1) return false;
+  const truncated = input.slice(0, unterminatedAt);
+  return oldRegexStrip(truncated) === stripHtmlComments(truncated).text;
 }
 
 /** True when an abrupt-close form (`<!-->` or `<!--->`) is CAUSALLY responsible for the divergence
@@ -295,7 +343,7 @@ describe('stripHtmlComments differential harness vs old regex', () => {
 
       if (oldOutput === newOutput) continue;
 
-      if (hasUnterminatedComment(input)) {
+      if (isUnterminatedCaused(input)) {
         unterminatedDivergences += 1;
         continue;
       }
