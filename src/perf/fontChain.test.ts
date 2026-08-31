@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FontChainProblem } from './fontChain.ts';
 import { internal, verifyFontChain } from './fontChain.ts';
 
 let root: string;
@@ -269,6 +270,8 @@ describe('verifyFontChain', () => {
     const problem = result.problems.find((p) => p.kind === 'unresolvable-import');
     expect(problem).toBeDefined();
     expect(problem?.subject).toBe('./missing.css');
+    // K5 item 3: `document` is threaded onto every emission site, not just deep-font.
+    expect(problem?.document).toBe(html);
   });
 
   it('reports an unreadable entry stylesheet as a problem, never a silent pass', () => {
@@ -283,7 +286,8 @@ describe('verifyFontChain', () => {
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
-      expect.objectContaining({ kind: 'unreadable-stylesheet', subject: missing }),
+      // K5 item 3: document is pinned at this emission site too.
+      expect.objectContaining({ kind: 'unreadable-stylesheet', subject: missing, document: html }),
     ]);
   });
 
@@ -359,6 +363,8 @@ describe('verifyFontChain', () => {
     expect(problem?.subject).toBe('./boom.css');
     expect(problem?.message).toContain('resolver blew up');
     expect(result.problems.some((p) => p.kind === 'unresolvable-import')).toBe(false);
+    // K5 item 3: document is pinned at this emission site too.
+    expect(problem?.document).toBe(html);
   });
 
   it('reports unparseable-font-face for a truncated @font-face block instead of dropping it silently', () => {
@@ -376,7 +382,8 @@ describe('verifyFontChain', () => {
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
-      expect.objectContaining({ kind: 'unparseable-font-face', subject: entry }),
+      // K5 item 3: document is pinned at this emission site too.
+      expect.objectContaining({ kind: 'unparseable-font-face', subject: entry, document: html }),
     ]);
   });
 
@@ -824,6 +831,10 @@ describe('verifyFontChain', () => {
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'empty-input', subject: '(htmlFiles)' }),
     ]);
+    // K5 item 3: the batch-level empty-input's document is DELIBERATELY empty (there is no
+    // document to name when the whole input list is empty) — pin that it IS empty, not merely
+    // unspecified.
+    expect(result.problems[0]?.document).toBe('');
   });
 
   it('RED: fires a per-document empty-input when a document has no <link rel="stylesheet"> tags, alongside a clean sibling document', () => {
@@ -865,6 +876,10 @@ describe('verifyFontChain', () => {
     expect(
       result?.problems.some((p) => p.kind === 'unreadable-html' && p.subject === badHtml),
     ).toBe(true);
+    // K5 item 3: document is pinned at this emission site too.
+    expect(
+      result?.problems.some((p) => p.kind === 'unreadable-html' && p.document === badHtml),
+    ).toBe(true);
   });
 
   it('an unreadable html file does not stop a preload elsewhere from being collected', () => {
@@ -904,5 +919,83 @@ describe('verifyFontChain', () => {
 
     expect(caught).toBeInstanceOf(TypeError);
     expect((caught as Error).message).toContain('htmlFiles[0]');
+  });
+
+  // --- K5 item 1: an hrefless <link rel="stylesheet"> must be reported, never silently dropped -
+
+  it('RED: reports malformed-stylesheet-link for a hrefless <link rel="stylesheet">, alongside a well-formed sibling', () => {
+    const entry = write(
+      'deep-font.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
+    );
+    // Before the fix: a well-formed sibling link made the hrefless one vanish with zero record —
+    // the confirmed repro from the controller (result: [ 'deep-font' ], the malformed link
+    // produced nothing). After the fix, both are reported.
+    const html = write(
+      'index-hrefless-link.html',
+      '<!doctype html><html><head><link rel="stylesheet"><link rel="stylesheet" ' +
+        `href="${STYLESHEET_HREF}"></head><body>hi</body></html>`,
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
+    expect(malformed).toBeDefined();
+    expect(malformed?.document).toBe(html);
+    expect(malformed?.subject).toBe('<link rel="stylesheet">');
+    // The well-formed sibling's finding must still be reported — the malformed tag no longer
+    // silences it, and it no longer silences the malformed tag either.
+    expect(
+      result.problems.some((p) => p.kind === 'deep-font' && p.subject === '/inter.woff2'),
+    ).toBe(true);
+  });
+
+  it('reports ONLY malformed-stylesheet-link (never a false "no <link rel=stylesheet> tags" empty-input) when the ONLY link lacks an href', () => {
+    const html = write(
+      'index-only-hrefless-link.html',
+      '<!doctype html><html><head><link rel="stylesheet"></head><body>hi</body></html>',
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: noStylesheets,
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({
+        kind: 'malformed-stylesheet-link',
+        document: html,
+        subject: '<link rel="stylesheet">',
+      }),
+    ]);
+    // The old, now-inaccurate message ("has no <link rel="stylesheet"> tags") must not appear —
+    // the document DOES have one, it is just malformed.
+    expect(result.problems.some((p) => p.kind === 'empty-input')).toBe(false);
+  });
+
+  // --- K5 item 2: FontChainProblem is a discriminated union, not a flat interface with prose-only
+  // field validity. This is a TYPE-ONLY regression guard (it.skip: never executed, only
+  // type-checked by `npm run typecheck` / `tsc`) proving the consumer footgun described in the
+  // module doc comment no longer compiles.
+  it.skip('TYPE-ONLY: grouping FontChainProblem by `.entry` across kinds must not compile', () => {
+    const problems: FontChainProblem[] = [];
+    const map = new Map<string, FontChainProblem[]>();
+    for (const p of problems) {
+      // @ts-expect-error -- `entry` does not exist on every FontChainProblem variant: grouping by
+      // it would silently merge empty-input/unreadable-html/malformed-stylesheet-link/
+      // unresolvable-stylesheet findings from UNRELATED documents into one '' bucket, which is
+      // the exact bug this union fixes (see module doc comment on FontChainProblem).
+      const key: string = p.entry;
+      const bucket = map.get(key) ?? [];
+      bucket.push(p);
+      map.set(key, bucket);
+    }
   });
 });
