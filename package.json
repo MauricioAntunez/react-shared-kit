@@ -63,7 +63,7 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run",
-    "release": "npm version \"$(node scripts/calver.mjs)\""
+    "release": "npm version \"$(node scripts/calver.mjs)\" && git push --follow-tags"
   },
   "publishConfig": {
     "access": "public"
