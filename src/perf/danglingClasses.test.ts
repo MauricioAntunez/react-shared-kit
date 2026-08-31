@@ -95,6 +95,74 @@ describe('findDanglingClasses', () => {
     expect(result.problems.some((p) => p.kind === 'dangling-class')).toBe(false);
   });
 
+  // --- CRITICAL 1 (class half): commented-out markup must not launder a dangling class -------
+
+  it('RED: a commented-out <div class="..."> still reports the class as dangling', () => {
+    // Leftover debug markup — not adversarial input — must not silence a genuine defect: today
+    // (before stripHtmlComments is applied) this returns {ok:true, problems:[]}.
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(htmlFile, '<!-- <div class="_hiwViz_18mh8_533">hi</div> -->');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'dangling-class' && p.className === '_hiwViz_18mh8_533',
+      ),
+    ).toBe(true);
+  });
+
+  // --- LOW 8: commented-out CSS must not be reported as dangling (false positive) -------------
+
+  it('does not report a commented-out CSS rule as dangling (LOW 8 false positive)', () => {
+    writeFileSync(cssFile, '/* ._oldHash_1a2b3c_12 { width: 465px; } */');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  // --- IMPORTANT 4: allowlist entries can be scoped to one specific cssFiles entry -----------
+
+  it('RED: an allowlist entry scoped to one file does not excuse the same name in a different file', () => {
+    // Reproduced defect: allowlisting a legitimate `hiwViz` in nav.module.css must not also
+    // exempt a genuine cross-module bug named `hiwViz` in page.module.css.
+    const navCssFile = join(root, 'nav.module.css');
+    writeFileSync(navCssFile, '._hiwViz_9zz01_7 { opacity: 0.5; }');
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }'); // page.module.css
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [navCssFile, cssFile],
+      allowlist: [{ pattern: /^hiwViz$/, file: navCssFile }],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'dangling-class' && p.className === '_hiwViz_18mh8_533',
+      ),
+    ).toBe(true);
+    // The scoped entry still excuses the name in the file it names.
+    expect(
+      result.problems.some((p) => p.kind === 'dangling-class' && p.className === '_hiwViz_9zz01_7'),
+    ).toBe(false);
+  });
+
+  it('a bare RegExp allowlist entry keeps its global meaning across every cssFiles entry', () => {
+    const navCssFile = join(root, 'nav.module.css');
+    writeFileSync(navCssFile, '._hiwViz_9zz01_7 { opacity: 0.5; }');
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 465px; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [navCssFile, cssFile],
+      allowlist: [/^hiwViz$/],
+    });
+
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
   // --- Only hashed classes are in scope --------------------------------------------------
 
   it('never flags a plain, non-hashed global class', () => {
@@ -254,5 +322,26 @@ describe('findDanglingClasses', () => {
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'dangling-class', className: 'hiwViz__a1b2c3' }),
     ]);
+  });
+
+  // --- IMPORTANT 7: hashPattern with NO capture group falls back to the full hashed name -----
+
+  it('a hashPattern with no capture group falls back to matching the full hashed name for allowlist', () => {
+    // No capture group at all — logicalName's `?? className` fallback is what this test pins.
+    // Every other fixture in this file uses a pattern WITH a capture group, which is exactly why
+    // this fallback line could regress with 19/19 green elsewhere (IMPORTANT 7).
+    const noGroupPattern = /^[A-Za-z0-9]+__[a-f0-9]+$/;
+    writeFileSync(cssFile, '.hiwViz__a1b2c3 { width: 465px; }');
+    writeFileSync(htmlFile, '<div class="unrelated">hi</div>');
+
+    const result = findDanglingClasses({
+      htmlFiles: [htmlFile],
+      cssFiles: [cssFile],
+      hashPattern: noGroupPattern,
+      // The allowlist pattern must match the FULL hashed name, since there is no capture group
+      // to extract a shorter logical name from.
+      allowlist: [/^hiwViz__a1b2c3$/],
+    });
+    expect(result).toEqual({ ok: true, problems: [] });
   });
 });

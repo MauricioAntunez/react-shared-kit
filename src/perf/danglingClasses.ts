@@ -1,5 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { assertStringOption } from './errors.ts';
+import { internal } from './fontChain.ts';
+
+const { stripComments, stripHtmlComments } = internal;
 
 /**
  * `findDanglingClasses` — detects a CSS-Modules selector that compiles cleanly and matches
@@ -77,6 +80,29 @@ export type DanglingClassProblem =
   | { kind: 'unreadable-css'; css: string; detail: string }
   | { kind: 'dangling-class'; css: string; className: string; detail: string };
 
+/**
+ * An allowlist entry scoped to one specific `cssFiles` entry (matched by exact string equality —
+ * the same string the caller passed in `cssFiles`). Use this when a logical name is a legitimate
+ * runtime-conditional variant in ONE stylesheet but must keep failing everywhere else — a bare
+ * `RegExp` entry cannot express that: it excuses the logical name globally, so allowlisting a
+ * genuine `hiwViz` variant in `nav.module.css` would also silence a real cross-module `hiwViz`
+ * bug in `page.module.css` (reproduced; see IMPORTANT 4 in the review-fixes plan).
+ */
+export interface ScopedAllowlistEntry {
+  /** Logical-name pattern, matched exactly as a bare `RegExp` entry would be. */
+  pattern: RegExp;
+  /** The one `cssFiles` entry this pattern is allowed to excuse, compared by exact string
+   * equality against the path passed in `cssFiles`. */
+  file: string;
+}
+
+/**
+ * A bare `RegExp` keeps today's GLOBAL meaning (documented public shape — must keep working
+ * unchanged): it excuses the logical name in every stylesheet. A `ScopedAllowlistEntry` narrows
+ * the excuse to one `cssFiles` entry.
+ */
+export type AllowlistEntry = RegExp | ScopedAllowlistEntry;
+
 export interface FindDanglingClassesOptions {
   /** Built HTML files to scan for `class="..."` tokens. */
   htmlFiles: string[];
@@ -86,9 +112,11 @@ export interface FindDanglingClassesOptions {
    * Patterns matched against a dangling class's LOGICAL name (see module doc comment) that are
    * expected to be legitimately absent from every built HTML file — a runtime-conditional variant
    * a component applies dynamically. Default `[]`: nothing is pre-excused (see "default behaviour
-   * is the strict one" above).
+   * is the strict one" above). A bare `RegExp` excuses the name globally, across every file in
+   * `cssFiles`; wrap it as a `ScopedAllowlistEntry` (`{ pattern, file }`) to restrict the excuse to
+   * one specific stylesheet, so it cannot also excuse a same-named bug in a different file.
    */
-  allowlist?: readonly RegExp[];
+  allowlist?: readonly AllowlistEntry[];
   /**
    * Filename shape a CSS-Modules-generated class name matches. Default is CSS Modules' own
    * convention: `_<logicalName>_<hash>_<line>`, e.g. `_hiwViz_18mh8_533`. Capture group 1, if
@@ -150,10 +178,14 @@ function logicalName(className: string, hashPattern: RegExp): string {
 function isAllowlisted(
   className: string,
   hashPattern: RegExp,
-  allowlist: readonly RegExp[],
+  allowlist: readonly AllowlistEntry[],
+  cssFile: string,
 ): boolean {
   const name = logicalName(className, hashPattern);
-  return allowlist.some((pattern) => pattern.test(name));
+  return allowlist.some((entry) => {
+    if (entry instanceof RegExp) return entry.test(name);
+    return entry.file === cssFile && entry.pattern.test(name);
+  });
 }
 
 /** Boundary validation (see ./errors.ts): a caller passing a non-string element in either array
@@ -204,7 +236,11 @@ function collectHtmlClasses(htmlFiles: string[], problems: DanglingClassProblem[
       });
       continue;
     }
-    for (const className of extractHtmlClasses(html)) htmlClasses.add(className);
+    // stripHtmlComments runs OUTSIDE the try above, deliberately (plan §3.2, CRITICAL 1 class
+    // half): a commented-out `<div class="_hiwViz_18mh8_533">` is not live markup, and without
+    // stripping it launders a genuinely dangling class to a clean pass.
+    const strippedHtml = stripHtmlComments(html);
+    for (const className of extractHtmlClasses(strippedHtml)) htmlClasses.add(className);
   }
   return htmlClasses;
 }
@@ -214,7 +250,7 @@ function collectHtmlClasses(htmlFiles: string[], problems: DanglingClassProblem[
 function checkCssFile(
   cssFile: string,
   htmlClasses: Set<string>,
-  allowlist: readonly RegExp[],
+  allowlist: readonly AllowlistEntry[],
   hashPattern: RegExp,
   problems: DanglingClassProblem[],
 ): void {
@@ -229,9 +265,13 @@ function checkCssFile(
     });
     return;
   }
-  for (const className of extractHashedClasses(css, hashPattern)) {
+  // stripComments runs OUTSIDE the try above, deliberately (see module doc comment / plan §3.2):
+  // it is a pure transform over text already read successfully, so a failure in it is a bug in
+  // this module, not a build defect to misreport as unreadable-css.
+  const stripped = stripComments(css);
+  for (const className of extractHashedClasses(stripped, hashPattern)) {
     if (htmlClasses.has(className)) continue;
-    if (isAllowlisted(className, hashPattern, allowlist)) continue;
+    if (isAllowlisted(className, hashPattern, allowlist, cssFile)) continue;
     problems.push({
       kind: 'dangling-class',
       css: cssFile,
