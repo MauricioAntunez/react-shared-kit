@@ -1,6 +1,6 @@
 {
   "name": "@uxr/react-shared-kit",
-  "version": "2026.830.1",
+  "version": "2026.831.0",
   "description": "Small, app-agnostic React utilities shared across projects.",
   "license": "MIT",
   "author": "Mauricio Antúnez",
