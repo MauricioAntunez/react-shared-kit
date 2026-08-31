@@ -492,4 +492,53 @@ describe('verifyHeaders', () => {
     });
     expect(passesUnderCustom.problems.some((p) => p.kind === 'unhashed-asset')).toBe(false);
   });
+
+  // --- HIGH 3: hashPattern is consumer-supplied and must be bounded before matching ---------
+
+  it('RED: reports oversized-filename, not unhashed-asset, for a filename over the cap — and never hangs even against a pathological hashPattern', () => {
+    // A 200-char filename is far over MAX_HASH_PATTERN_TOKEN_LENGTH (128). /^(a+)+$/ is a classic
+    // catastrophic-backtracking pattern — the measured evidence (see errors.ts) is 51.9s against a
+    // mere 36-char token. If this file's basename ever reached hashPattern.test(), this test would
+    // hang for a very long time. The cap must reject it BEFORE the regex ever runs.
+    const oversizedName = `${'a'.repeat(196)}.js`; // 199 chars
+    writeFileSync(join(assetsDir, oversizedName), BYTES);
+    writeFileSync(
+      headersFile,
+      ['/assets/*', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+
+    const start = Date.now();
+    const result = verifyHeaders({
+      headersFile,
+      assetsDir,
+      immutablePrefixes: ['/assets/'],
+      hashPattern: /^(a+)+$/,
+    });
+    const elapsedMs = Date.now() - start;
+
+    // Generous, not tight (see plan §K3): this only needs to prove "did not hang", not pin a
+    // specific millisecond figure that the next person refreshes away.
+    expect(elapsedMs).toBeLessThan(5000);
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'oversized-filename' && p.path.endsWith(oversizedName),
+      ),
+    ).toBe(true);
+    // Not silently passed either: the oversized file must never ALSO be reported as unhashed-asset
+    // (that would claim hashPattern was actually run against it, which it never was).
+    expect(
+      result.problems.some((p) => p.kind === 'unhashed-asset' && p.path.endsWith(oversizedName)),
+    ).toBe(false);
+  });
+
+  it('GREEN: a filename at or under the cap is tested against hashPattern normally', () => {
+    writeFileSync(join(assetsDir, 'app-a1B2c3D4.js'), BYTES);
+    writeFileSync(
+      headersFile,
+      ['/assets/*', '  Cache-Control: public, max-age=31536000, immutable', ''].join('\n'),
+    );
+    const result = verifyHeaders({ headersFile, assetsDir, immutablePrefixes: ['/assets/'] });
+    expect(result.problems.some((p) => p.kind === 'oversized-filename')).toBe(false);
+  });
 });

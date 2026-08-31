@@ -81,3 +81,78 @@ export function assertStringOption(value: unknown, optionName: string): asserts 
   if (typeof value === 'string') return;
   throw new TypeError(`${optionName} must be a string, but received ${describeValue(value)}.`);
 }
+
+/**
+ * Maximum length of a token handed to a CONSUMER-SUPPLIED `hashPattern` (`headers.ts`'s
+ * `checkAssetsHashed`, `danglingClasses.ts`'s `extractHashedClasses`/`logicalName`) before it is
+ * matched.
+ *
+ * WHAT THIS CAP IS: a sanity bound on token LENGTH, nothing more. `hashPattern` is an arbitrary
+ * regex the consumer provides, tested against build-content-derived strings (filenames, CSS class
+ * selector tokens) with no length cap upstream — those strings can be as long as whatever produced
+ * them. A real hashed filename (`<name>-<8-char hash>.<ext>`) or CSS-Modules class name
+ * (`_<logicalName>_<hash>_<line>`) is essentially always well under 128 characters — nothing in
+ * this package's own fixtures or any real Vite/CSS-Modules output approaches it — so this cap can
+ * only ever reject pathological-LENGTH input, never a legitimate hashed name. Do NOT lower this
+ * "to be safer": the goal is a length sanity check, not tuning a defense against a specific attack
+ * pattern, and a smaller cap risks clipping a real name with an unusually long logical part.
+ *
+ * WHAT THIS CAP IS NOT, AND CANNOT BE (HIGH review finding, 2026-08-30 — corrects an earlier
+ * version of this comment that claimed the cap bounded execution time): no LENGTH cap can bound
+ * regex execution TIME. Measured on `/^(a+)+$/` (classic catastrophic backtracking) against a
+ * failing match:
+ *
+ *     20 chars →     23 ms        30 chars →   4,659 ms
+ *     25 chars →    145 ms        32 chars →  19,275 ms
+ *     28 chars →  1,158 ms        36 chars →  51,900 ms
+ *
+ * This cap is 128 — 3.5x LONGER than the 36-character token that took 51.9 SECONDS above — and no
+ * smaller cap fixes it either: legitimate CSS-Modules class names and hashed filenames reach ~40
+ * characters, while the blowup is already at 19 seconds by 32 characters. There is no length value
+ * that admits real input and excludes a pathological pattern; catastrophic backtracking is
+ * exponential in input length, so shrinking the cap barely moves the worst case while cutting into
+ * legitimate names.
+ *
+ * A consumer-supplied pathological `hashPattern`/`allowlist` regex CAN still hang the build. This
+ * cap does not defend against that, and nothing in this module does. The pattern DEFAULTS shipped
+ * by `headers.ts` and `danglingClasses.ts` are linear and safe. `hashPattern`/`allowlist` patterns
+ * come from the same trust domain as the build script that invokes this gate — the person who
+ * writes one also writes the other — so a pathological pattern is a bug the author hits on their
+ * own first run against real content, not a vulnerability an external or adversarial party can
+ * trigger.
+ */
+export const MAX_HASH_PATTERN_TOKEN_LENGTH = 128;
+
+/**
+ * `hashPattern.test(token)`, bounded by `MAX_HASH_PATTERN_TOKEN_LENGTH`. Returns `'oversized'`
+ * WITHOUT ever invoking `pattern` when `token` exceeds the cap — the point is to never hand a
+ * consumer-supplied regex an unbounded string, not to time-box the regex engine after the fact
+ * (not possible for a synchronous, single-threaded `RegExp.test()` call; nothing can interrupt it
+ * once started). Callers MUST branch on `'oversized'` and report it as its own explicit finding —
+ * never fold it into `'no-match'` (that makes the token silently vanish from the check, since no
+ * matching hashed name is ever recorded for it) and never treat it as `'match'` (that would accept
+ * a token that was never actually verified against `hashPattern`). See `headers.ts`'s
+ * `oversized-filename` and `danglingClasses.ts`'s `oversized-class-name` problem kinds.
+ */
+export function testHashPatternBounded(
+  pattern: RegExp,
+  token: string,
+): 'match' | 'no-match' | 'oversized' {
+  if (token.length > MAX_HASH_PATTERN_TOKEN_LENGTH) return 'oversized';
+  return pattern.test(token) ? 'match' : 'no-match';
+}
+
+/**
+ * `hashPattern.exec(token)`, bounded the same way as `testHashPatternBounded`. Used by
+ * `danglingClasses.ts`'s `logicalName`, whose only current caller already passes a cap-checked
+ * class name (`extractHashedClasses` never adds an oversized name to the set it returns) — this
+ * guard exists so `logicalName` cannot become a second, unguarded path to the same regex if it is
+ * ever called with unchecked input later.
+ */
+export function execHashPatternBounded(
+  pattern: RegExp,
+  token: string,
+): RegExpExecArray | null | 'oversized' {
+  if (token.length > MAX_HASH_PATTERN_TOKEN_LENGTH) return 'oversized';
+  return pattern.exec(token);
+}

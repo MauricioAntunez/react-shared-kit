@@ -18,15 +18,16 @@
  * ONE QUALIFICATION to "returns a result object", and it is narrower than it first reads. These
  * gates return problems for every condition they are built to detect — missing files, unreadable
  * input, malformed rules, vacuous input, a resolver that declines to resolve. What they do NOT do
- * is dress a *programming* error up as one of those findings. All three VALIDATE their string
- * inputs at the boundary, rather than trying to classify an error after the fact: a
- * `resolveHref`/`resolveImport` callback's return value, and `headers`'s `headersFile`/
- * `assetsDir` options, are checked against their declared type (`string | undefined` for a
- * resolver, `string` for an option) the moment they are produced — before they ever reach an fs
- * call. A violation throws immediately, naming the resolver/option and what it actually returned,
- * so a consumer whose `resolveHref`/`resolveImport` returns a `URL` object, a `Proxy`, or any
- * other non-string gets a loud crash naming their bug, not a plausible-looking "unreadable
- * stylesheet" pointing at a file that is fine.
+ * is dress a *programming* error up as one of those findings. Every gate in this module VALIDATES
+ * its string inputs at the boundary, rather than trying to classify an error after the fact: a
+ * resolver callback's return value (`resolveHref` in `verifyCssBudget`; `resolveImport` and
+ * `resolveStylesheet` in `verifyFontChain`), `verifyHeaders`'s `headersFile`/`assetsDir` options,
+ * and every `htmlFiles`/`cssFiles` array ELEMENT, are checked against their declared type
+ * (`string | undefined` for a resolver, `string` for an option or element) the moment they are
+ * produced — before they ever reach an fs call. A violation throws immediately, naming the
+ * resolver/option and what it actually returned, so a consumer whose resolver returns a `URL`
+ * object, a `Proxy`, or any other non-string gets a loud crash naming their bug, not a
+ * plausible-looking "unreadable stylesheet" pointing at a file that is fine.
  *
  * Four rounds tried the opposite approach — classifying the error AFTER `readFileSync`/
  * `readdirSync` had already thrown — by `.code` presence, then an `ERR_` prefix exclusion, then a
@@ -66,6 +67,39 @@
  * project — the same two-gate split that already exists for images, where `verifyHtmlImages`
  * (attributes, here) and a browser-driven layout sweep (rendered box, there) both run because
  * neither subsumes the other. A consumer running only these gates has weaker coverage than that.
+ *
+ * `findDanglingClasses` is the fourth gate: a CSS-Modules selector joining a class from one
+ * built file to a hashed name from another compiles cleanly but matches no element, because CSS
+ * Modules hashes class names per source file. That is dead weight in a render-blocking
+ * stylesheet — parsed and evaluated on every route for zero effect — and simultaneously means the
+ * rule's own intent is silently not applying. See `./danglingClasses.ts` for the mechanism, the
+ * `allowlist` for runtime-conditional variants (a bare `RegExp` or a file-scoped
+ * `ScopedAllowlistEntry`), and the fail-closed rules it inherits from here.
+ *
+ * COMMENT STRIPPING IS CENTRALISED, not reimplemented per gate: `./text.ts`'s `stripComments`
+ * (CSS `/* ... *\/`) and `stripHtmlComments` (`<!-- ... -->`) are the only implementations, so a
+ * commented-out `@import`/`@font-face`/`<link>`/`class="..."`/CSS-Modules selector is never
+ * mistaken for live in `verifyFontChain` or `findDanglingClasses`. `./text.ts` is INTERNAL — not
+ * re-exported here — because no consumer needs it; `verifyCssBudget` and `verifyHeaders` have no
+ * comment-stripping step of their own to share.
+ *
+ * `verifyFontChain` measures font discovery PER DOCUMENT, not from a build-wide union: each
+ * `htmlFiles` entry's own `<link rel="stylesheet">` tags (resolved via `resolveStylesheet`) name
+ * the CSS graph walked for THAT document, and only that document's own preload/inline-`@font-face`
+ * signals exempt a font from it — so a preload added to one page can never silence a genuinely
+ * late font on a different page that shares the same stylesheet.
+ *
+ * A consumer-supplied `hashPattern` (`findDanglingClasses`, `verifyHeaders`) is matched only after
+ * the candidate token is bounded to `MAX_HASH_PATTERN_TOKEN_LENGTH` — never handed to an arbitrary,
+ * consumer-supplied regex while still unbounded in length. CORRECTED WORDING (round-2 review
+ * MEDIUM #6 — an earlier version of this paragraph called the cap a ReDoS mitigation, which
+ * `./errors.ts` itself disproves): a 32-character token already takes 19.3 SECONDS against a
+ * catastrophically backtracking pattern, so a 128-char-bounded string is EXACTLY as much a ReDoS
+ * surface as an unbounded one — no length cap can bound regex execution TIME. The cap is a length
+ * sanity bound only; an over-cap token is reported as its own explicit problem
+ * (`oversized-class-name`/`oversized-filename`) rather than silently skipped or falsely matched.
+ * See `./errors.ts` for the cap, the measured backtracking curve, and why `hashPattern`/
+ * `allowlist` regexes are trusted (same author as the build script), unlike build content.
  */
 
 export type {
@@ -75,6 +109,15 @@ export type {
   VerifyCssBudgetResult,
 } from './cssBudget.ts';
 export { verifyCssBudget } from './cssBudget.ts';
+export type {
+  AllowlistEntry,
+  DanglingClassProblem,
+  DanglingClassProblemKind,
+  FindDanglingClassesOptions,
+  FindDanglingClassesResult,
+  ScopedAllowlistEntry,
+} from './danglingClasses.ts';
+export { findDanglingClasses } from './danglingClasses.ts';
 export type {
   FontChainProblem,
   FontChainProblemKind,
