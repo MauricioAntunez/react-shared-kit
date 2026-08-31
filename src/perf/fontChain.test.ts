@@ -5,14 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { internal, verifyFontChain } from './fontChain.ts';
 
 let root: string;
-let noSignalHtml: string;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'uxr-fontchain-'));
-  // A document with neither a font preload nor an inline <style> — the baseline every test that
-  // is not specifically exercising the exemption shapes uses, so those tests aren't accidentally
-  // passing because of a stray exemption elsewhere in the fixture.
-  noSignalHtml = write('index.html', '<!doctype html><html><body>hi</body></html>');
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
@@ -26,9 +21,36 @@ function write(name: string, contents: string): string {
 }
 
 /** Resolver over a plain specifier -> path map, mirroring what a consumer's Vite/build resolution
- * would supply. Returns undefined for anything not in the map, matching the "unresolvable" contract. */
+ * would supply. Returns undefined for anything not in the map, matching the "unresolvable"
+ * contract. Shared shape for both `resolveStylesheet` and `resolveImport` — they take the same
+ * `(specifier) => string | undefined` signature. */
 function resolverFor(map: Record<string, string>): (specifier: string) => string | undefined {
   return (specifier) => map[specifier];
+}
+
+/** A stub `resolveStylesheet` that always fails — used by tests exercising `resolveImport`/parsing
+ * behaviour where the document either has no `<link rel="stylesheet">` at all (so the resolver is
+ * never called) or a caller wires the entry directly via a single href/path pair through
+ * `htmlWithStylesheet` + `resolverFor` instead. */
+const noStylesheets = resolverFor({});
+
+/** One document with a single `<link rel="stylesheet" href="STYLESHEET_HREF">` plus arbitrary
+ * extra head markup (a preload tag, an inline `<style>`, an HTML comment, ...). This is the
+ * standard fixture shape for every test that needs exactly one entry stylesheet to walk — pair it
+ * with `resolverFor({ [STYLESHEET_HREF]: entryPath })` for `resolveStylesheet`. */
+const STYLESHEET_HREF = '/entry.css';
+function htmlWithStylesheet(name: string, extraHead = ''): string {
+  return write(
+    name,
+    `<!doctype html><html><head><link rel="stylesheet" href="${STYLESHEET_HREF}">${extraHead}</head><body>hi</body></html>`,
+  );
+}
+
+/** A document with NO `<link rel="stylesheet">` at all — the baseline every test that only needs
+ * "a valid document with no font signal and no stylesheet of its own" uses (e.g. a *different*
+ * document in a multi-document test where only one page matters for the assertion). */
+function htmlWithNoStylesheet(name: string): string {
+  return write(name, '<!doctype html><html><body>hi</body></html>');
 }
 
 describe('verifyFontChain', () => {
@@ -44,16 +66,18 @@ describe('verifyFontChain', () => {
       'direct.css',
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); font-display: swap; } body { color: red; }`,
     );
+    const html = htmlWithStylesheet('index.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
     expect(result.ok).toBe(false);
     const problem = result.problems.find((p) => p.kind === 'deep-font');
     expect(problem).toBeDefined();
+    expect(problem?.document).toBe(html);
     expect(problem?.subject).toBe('/inter.woff2');
     expect(problem?.chain).toEqual([entry]);
     expect(problem?.message).toContain('1 stylesheet hop');
@@ -65,16 +89,14 @@ describe('verifyFontChain', () => {
       'direct-preloaded.css',
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); }`,
     );
-    const html = write(
+    const html = htmlWithStylesheet(
       'preloaded.html',
-      '<!doctype html><html><head>' +
-        '<link rel="preload" as="font" crossorigin href="/inter.woff2">' +
-        '</head><body>hi</body></html>',
+      '<link rel="preload" as="font" crossorigin href="/inter.woff2">',
     );
 
     const result = verifyFontChain({
       htmlFiles: [html],
-      entryStylesheets: [entry],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
@@ -86,16 +108,14 @@ describe('verifyFontChain', () => {
       'direct-preload-no-cors.css',
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); }`,
     );
-    const html = write(
+    const html = htmlWithStylesheet(
       'preload-no-cors.html',
-      '<!doctype html><html><head>' +
-        '<link rel="preload" as="font" href="/inter.woff2">' +
-        '</head><body>hi</body></html>',
+      '<link rel="preload" as="font" href="/inter.woff2">',
     );
 
     const result = verifyFontChain({
       htmlFiles: [html],
-      entryStylesheets: [entry],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
@@ -108,16 +128,16 @@ describe('verifyFontChain', () => {
       'direct-also-inline.css',
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); }`,
     );
-    const html = write(
+    const html = htmlWithStylesheet(
       'inline.html',
-      '<!doctype html><html><head><style>' +
+      '<style>' +
         "@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); }" +
-        '</style></head><body>hi</body></html>',
+        '</style>',
     );
 
     const result = verifyFontChain({
       htmlFiles: [html],
-      entryStylesheets: [entry],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
@@ -130,10 +150,11 @@ describe('verifyFontChain', () => {
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); font-display: swap; }`,
     );
     const entry = write('entry.css', `@import "./fonts.css"; body { color: red; }`);
+    const html = htmlWithStylesheet('index-import.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './fonts.css': fontsSheet }),
     });
 
@@ -152,10 +173,11 @@ describe('verifyFontChain', () => {
     );
     const mid = write('mid.css', `@import "./leaf.css";`);
     const entry = write('entry-2.css', `@import "./mid.css";`);
+    const html = htmlWithStylesheet('index-2level.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './mid.css': mid, './leaf.css': leaf }),
     });
 
@@ -175,10 +197,11 @@ describe('verifyFontChain', () => {
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
     );
     const entry = write('entry-nothresh.css', `@import "./leaf-nothresh.css";`);
+    const html = htmlWithStylesheet('index-nothresh.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       // @ts-expect-error maxChainDepth is not part of the options type any more
       maxChainDepth: 99,
       resolveImport: resolverFor({ './leaf-nothresh.css': leaf }),
@@ -196,10 +219,11 @@ describe('verifyFontChain', () => {
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); font-display: swap; }`,
     );
     const entry = write('entry-swap.css', `@import "./fonts-swap.css";`);
+    const html = htmlWithStylesheet('index-swap.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './fonts-swap.css': fontsSheet }),
     });
 
@@ -214,10 +238,11 @@ describe('verifyFontChain', () => {
       'direct-message.css',
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
     );
+    const html = htmlWithStylesheet('index-message.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
@@ -228,14 +253,15 @@ describe('verifyFontChain', () => {
     expect(problem?.message).toContain('usually the better choice');
   });
 
-  // --- Existing coverage, ported to the new required htmlFiles input -------------------------
+  // --- Existing coverage, ported to the new per-document resolveStylesheet input -------------
 
   it('reports unresolvable @import specifiers as a problem, not a skipped check', () => {
     const entry = write('entry-broken.css', `@import "./missing.css";`);
+    const html = htmlWithStylesheet('index-broken.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
@@ -247,10 +273,11 @@ describe('verifyFontChain', () => {
 
   it('reports an unreadable entry stylesheet as a problem, never a silent pass', () => {
     const missing = join(root, 'does-not-exist.css');
+    const html = htmlWithStylesheet('index-unreadable-entry.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [missing],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: missing }),
       resolveImport: resolverFor({}),
     });
 
@@ -276,10 +303,11 @@ describe('verifyFontChain', () => {
       bPath,
       `@import "./a.css"; @font-face { font-family: 'X'; src: url('/x.woff2'); }`,
     );
+    const html = htmlWithStylesheet('index-cycle.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [aPath],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: aPath }),
       resolveImport: resolverFor({ './a.css': aPath, './b.css': bPath }),
     });
 
@@ -298,10 +326,11 @@ describe('verifyFontChain', () => {
     const c = write('c.css', `@font-face { font-family: 'X'; src: url('/c.woff2'); }`);
     const a = write('a-order.css', `@import "./c.css";`);
     const entry = write('entry-order.css', `@import "./a-order.css"; @import "./c.css";`);
+    const html = htmlWithStylesheet('index-order.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './a-order.css': a, './c.css': c }),
     });
 
@@ -313,11 +342,12 @@ describe('verifyFontChain', () => {
 
   it('reports resolver-error, distinct from unresolvable-import, when resolveImport throws', () => {
     const entry = write('entry-throws.css', `@import "./boom.css";`);
+    const html = htmlWithStylesheet('index-resolver-throws.html');
     const boom = new Error('resolver blew up');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: () => {
         throw boom;
       },
@@ -336,10 +366,11 @@ describe('verifyFontChain', () => {
       'truncated.css',
       `@font-face { font-family: 'Broken'; src: url('/broken.woff2');`, // no closing brace
     );
+    const html = htmlWithStylesheet('index-truncated.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
@@ -360,10 +391,11 @@ describe('verifyFontChain', () => {
       `@font-face { font-family: 'Broken'; src: url('/broken.woff2');`, // no closing brace
     );
     const entry = write('entry-renamed.css', `@import "nested-specifier.css";`);
+    const html = htmlWithStylesheet('index-renamed.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ 'nested-specifier.css': nestedRealFile }),
     });
 
@@ -391,10 +423,11 @@ describe('verifyFontChain', () => {
     const n = write('n.css', `@import "./shared.css";`);
     const m = write('m.css', `@import "./n.css";`);
     const entry = write('entry-3level.css', `@import "./p.css"; @import "./m.css";`);
+    const html = htmlWithStylesheet('index-3level.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({
         './p.css': p,
         './m.css': m,
@@ -412,10 +445,11 @@ describe('verifyFontChain', () => {
 
   it('ships chain = [entry] (never an empty array) when the entry stylesheet itself is unreadable', () => {
     const missing = join(root, 'gone.css');
+    const html = htmlWithStylesheet('index-gone.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [missing],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: missing }),
       resolveImport: resolverFor({}),
     });
 
@@ -430,11 +464,12 @@ describe('verifyFontChain', () => {
     // rounds tried to classify the error AFTER readFileSync threw it (by .code, by prefix, by a
     // narrow allowlist) and each attempt failed a different way; this validates the input instead.
     const entry = write('entry-contract-violation.css', `@import "./whatever.css";`);
+    const html = htmlWithStylesheet('index-contract-violation.html');
     let caught: unknown;
     try {
       verifyFontChain({
-        htmlFiles: [noSignalHtml],
-        entryStylesheets: [entry],
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
         resolveImport: (() => ({ notAPath: true })) as any,
       });
@@ -454,11 +489,12 @@ describe('verifyFontChain', () => {
     // allowlist, so it was misreported as unreadable-stylesheet). The boundary check here rejects
     // ANY non-string/non-undefined return, so this needs no special-casing.
     const entry = write('entry-url-return.css', `@import "./whatever.css";`);
+    const html = htmlWithStylesheet('index-url-return.html');
     let caught: unknown;
     try {
       verifyFontChain({
-        htmlFiles: [noSignalHtml],
-        entryStylesheets: [entry],
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: () => new URL('https://example.com/whatever.css') as unknown as string,
       });
     } catch (error) {
@@ -473,12 +509,13 @@ describe('verifyFontChain', () => {
     // Any exotic non-string shape must be rejected, not just the two shapes already covered by
     // other tests — a Proxy is typeof 'object', same as a plain object, and must fail the same way.
     const entry = write('entry-proxy-return.css', `@import "./whatever.css";`);
+    const html = htmlWithStylesheet('index-proxy-return.html');
     const proxyReturn = new Proxy({}, { get: () => 'trap' }) as unknown as string;
     let caught: unknown;
     try {
       verifyFontChain({
-        htmlFiles: [noSignalHtml],
-        entryStylesheets: [entry],
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: () => proxyReturn,
       });
     } catch (error) {
@@ -495,11 +532,12 @@ describe('verifyFontChain', () => {
     // must pass assertResolverReturn (it IS a string) and be reported as a normal
     // unreadable-stylesheet finding, never re-thrown.
     const entry = write('entry-nul-byte.css', `@import "./whatever.css";`);
+    const html = htmlWithStylesheet('index-nul-byte.html');
     const nulBytePath = `${root}/does-not-exist\0.css`;
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: () => nulBytePath,
     });
 
@@ -515,10 +553,11 @@ describe('verifyFontChain', () => {
     // the same shape that matters here: a fact about the entity on disk, not a caller contract
     // violation, that the unconditional catch must report rather than filter and re-throw.
     const entry = write('entry-eisdir.css', `@import "./whatever.css";`);
+    const html = htmlWithStylesheet('index-eisdir.html');
 
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [entry],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: () => root, // a real directory, not a file
     });
 
@@ -537,6 +576,7 @@ describe('verifyFontChain', () => {
     // brotliCompressSync in cssBudget.ts), so `internal.stripComments` is a test-only indirection
     // point that exists purely to make this provable.
     const entry = write('entry-strip-comments-bug.css', `body { color: red; }`);
+    const html = htmlWithStylesheet('index-strip-comments-bug.html');
     const spy = vi.spyOn(internal, 'stripComments').mockImplementationOnce(() => {
       throw new RangeError('BUG: comment-stripping regex blew up');
     });
@@ -544,8 +584,8 @@ describe('verifyFontChain', () => {
     try {
       expect(() =>
         verifyFontChain({
-          htmlFiles: [noSignalHtml],
-          entryStylesheets: [entry],
+          htmlFiles: [html],
+          resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
           resolveImport: () => undefined,
         }),
       ).toThrow('BUG: comment-stripping regex blew up');
@@ -554,27 +594,229 @@ describe('verifyFontChain', () => {
     }
   });
 
-  // --- Anti-vacuity: empty input must never read as clean, for EITHER list -------------------
+  // --- CRITICAL 1 (font half): HTML comments must never be treated as live -------------------
 
-  it('RED: fires empty-input when entryStylesheets is empty', () => {
+  it('does NOT exempt a font whose only preload link is commented out (a debug-leftover comment must not silence a real defect)', () => {
+    const entry = write(
+      'entry-commented-preload.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); }`,
+    );
+    const html = htmlWithStylesheet(
+      'index-commented-preload.html',
+      '<!-- <link rel="preload" as="font" crossorigin href="/inter.woff2"> -->',
+    );
+
     const result = verifyFontChain({
-      htmlFiles: [noSignalHtml],
-      entryStylesheets: [],
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some((p) => p.kind === 'deep-font' && p.subject === '/inter.woff2'),
+    ).toBe(true);
+  });
+
+  it('does NOT walk a commented-out <link rel="stylesheet"> as part of the graph', () => {
+    const entry = write(
+      'entry-would-be-commented.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
+    );
+    const html = write(
+      'index-commented-stylesheet.html',
+      `<!doctype html><html><head><!-- <link rel="stylesheet" href="${STYLESHEET_HREF}"> --></head><body>hi</body></html>`,
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    // The document now has zero LIVE stylesheets — it must be reported as such (see the
+    // empty-input-per-document tests below), never silently pass because a commented-out link
+    // still counted as one.
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'empty-input', document: html, subject: '(stylesheets)' }),
+    ]);
+  });
+
+  it('does NOT exempt an inline @font-face declared inside a commented-out <style> block', () => {
+    const entry = write(
+      'entry-commented-inline.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
+    );
+    const html = htmlWithStylesheet(
+      'index-commented-inline.html',
+      "<!-- <style>@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }</style> -->",
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems.some((p) => p.kind === 'deep-font')).toBe(true);
+  });
+
+  // --- CRITICAL 2: per-document scoping — a preload in one document never exempts another -----
+
+  it('reports pageB (which does not preload) even though pageA (which does) shares the same stylesheet', () => {
+    const shared = write(
+      'shared.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); }`,
+    );
+    const pageA = htmlWithStylesheet(
+      'pageA.html',
+      '<link rel="preload" as="font" crossorigin href="/inter.woff2">',
+    );
+    const pageB = htmlWithStylesheet('pageB.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [pageA, pageB],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: shared }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    const deepFontProblems = result.problems.filter((p) => p.kind === 'deep-font');
+    expect(deepFontProblems).toHaveLength(1);
+    expect(deepFontProblems[0]?.document).toBe(pageB);
+    // pageA must NOT be reported — its own preload correctly exempts it.
+    expect(deepFontProblems.some((p) => p.document === pageA)).toBe(false);
+  });
+
+  it('reports a document with no <link rel="stylesheet"> at all, never as a vacuous pass', () => {
+    const html = htmlWithNoStylesheet('index-no-stylesheet.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
-      expect.objectContaining({ kind: 'empty-input', subject: '(entryStylesheets)' }),
+      expect.objectContaining({ kind: 'empty-input', document: html, subject: '(stylesheets)' }),
     ]);
   });
+
+  it('reports unresolvable-stylesheet, never a silent skip, when resolveStylesheet returns undefined', () => {
+    const html = htmlWithStylesheet('index-unresolvable-stylesheet.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: noStylesheets,
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({
+        kind: 'unresolvable-stylesheet',
+        document: html,
+        subject: STYLESHEET_HREF,
+      }),
+    ]);
+  });
+
+  it('reports unresolvable-stylesheet, distinct case, when resolveStylesheet throws', () => {
+    const html = htmlWithStylesheet('index-resolvestylesheet-throws.html');
+    const boom = new Error('resolveStylesheet blew up');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: () => {
+        throw boom;
+      },
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'unresolvable-stylesheet');
+    expect(problem).toBeDefined();
+    expect(problem?.subject).toBe(STYLESHEET_HREF);
+    expect(problem?.message).toContain('resolveStylesheet blew up');
+  });
+
+  it('propagates a resolveStylesheet contract violation instead of misreporting it', () => {
+    const html = htmlWithStylesheet('index-resolvestylesheet-contract.html');
+    let caught: unknown;
+    try {
+      verifyFontChain({
+        htmlFiles: [html],
+        // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
+        resolveStylesheet: (() => ({ notAPath: true })) as any,
+        resolveImport: resolverFor({}),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(TypeError);
+    expect((caught as Error).message).toContain('resolveStylesheet');
+  });
+
+  // --- IMPORTANT 5: attr() must accept single-quoted attribute values too --------------------
+
+  it('exempts a font preloaded with single-quoted <link> attributes (valid HTML5)', () => {
+    const entry = write(
+      'entry-single-quoted.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
+    );
+    const html = write(
+      'index-single-quoted.html',
+      `<!doctype html><html><head><link rel='stylesheet' href='${STYLESHEET_HREF}'>` +
+        "<link rel='preload' as='font' crossorigin href='/inter.woff2'>" +
+        '</head><body>hi</body></html>',
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
+
+  // --- IMPORTANT 6: guard against deleting the as="font" check --------------------------------
+
+  it('does NOT exempt a preload with as="style" — only as="font" satisfies the exemption', () => {
+    // If the `as === 'font'` check in extractPreloadFontUrls were deleted, this preload (which
+    // merely shares the same href, with the wrong `as`) would wrongly exempt the font, and this
+    // test would go RED — this is IMPORTANT 6's guard against exactly that regression.
+    const entry = write(
+      'entry-wrong-as.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
+    );
+    const html = htmlWithStylesheet(
+      'index-wrong-as.html',
+      '<link rel="preload" as="style" crossorigin href="/inter.woff2">',
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some((p) => p.kind === 'deep-font' && p.subject === '/inter.woff2'),
+    ).toBe(true);
+  });
+
+  // --- Anti-vacuity: empty input must never read as clean, for either level ------------------
 
   it('RED: fires empty-input when htmlFiles is empty', () => {
-    const entry = write('entry-no-html.css', `body { color: red; }`);
-
     const result = verifyFontChain({
       htmlFiles: [],
-      entryStylesheets: [entry],
+      resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
     });
 
@@ -584,17 +826,20 @@ describe('verifyFontChain', () => {
     ]);
   });
 
-  it('reports both empty-input kinds when both lists are empty, without also walking anything', () => {
+  it('RED: fires a per-document empty-input when a document has no <link rel="stylesheet"> tags, alongside a clean sibling document', () => {
+    const entry = write('entry-mixed-empty.css', `body { color: red; }`);
+    const withStylesheet = htmlWithStylesheet('index-with-stylesheet.html');
+    const withoutStylesheet = htmlWithNoStylesheet('index-without-stylesheet.html');
+
     const result = verifyFontChain({
-      htmlFiles: [],
-      entryStylesheets: [],
+      htmlFiles: [withStylesheet, withoutStylesheet],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
-      expect.objectContaining({ kind: 'empty-input', subject: '(htmlFiles)' }),
-      expect.objectContaining({ kind: 'empty-input', subject: '(entryStylesheets)' }),
+      expect.objectContaining({ kind: 'empty-input', document: withoutStylesheet }),
     ]);
   });
 
@@ -603,14 +848,13 @@ describe('verifyFontChain', () => {
   it('RED: reports unreadable-html instead of throwing when an html file is a directory', () => {
     const badHtml = join(root, 'bad.html');
     mkdirSync(badHtml);
-    const entry = write('entry-bad-html.css', `body { color: red; }`);
 
     let threw = false;
     let result: ReturnType<typeof verifyFontChain> | undefined;
     try {
       result = verifyFontChain({
         htmlFiles: [badHtml],
-        entryStylesheets: [entry],
+        resolveStylesheet: noStylesheets,
         resolveImport: resolverFor({}),
       });
     } catch {
@@ -626,18 +870,18 @@ describe('verifyFontChain', () => {
   it('an unreadable html file does not stop a preload elsewhere from being collected', () => {
     const badHtml = join(root, 'bad2.html');
     mkdirSync(badHtml);
-    const goodHtml = write(
-      'good.html',
-      '<link rel="preload" as="font" crossorigin href="/inter.woff2">',
-    );
     const entry = write(
       'entry-mixed-html.css',
       `@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }`,
     );
+    const goodHtml = htmlWithStylesheet(
+      'good.html',
+      '<link rel="preload" as="font" crossorigin href="/inter.woff2">',
+    );
 
     const result = verifyFontChain({
       htmlFiles: [badHtml, goodHtml],
-      entryStylesheets: [entry],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
     });
 
@@ -646,13 +890,12 @@ describe('verifyFontChain', () => {
   });
 
   it('propagates an htmlFiles element contract violation instead of misreporting it', () => {
-    const entry = write('entry-html-contract.css', `body { color: red; }`);
     let caught: unknown;
     try {
       verifyFontChain({
         // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the htmlFiles element contract
         htmlFiles: [{ notAPath: true } as any],
-        entryStylesheets: [entry],
+        resolveStylesheet: noStylesheets,
         resolveImport: resolverFor({}),
       });
     } catch (error) {

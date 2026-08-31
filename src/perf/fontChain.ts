@@ -99,6 +99,7 @@ export type FontChainProblemKind =
   | 'empty-input'
   | 'unreadable-html'
   | 'unreadable-stylesheet'
+  | 'unresolvable-stylesheet'
   | 'unresolvable-import'
   | 'resolver-error'
   | 'unparseable-font-face'
@@ -106,35 +107,47 @@ export type FontChainProblemKind =
 
 export interface FontChainProblem {
   kind: FontChainProblemKind;
-  /** The entry stylesheet this problem was found while walking. Empty for `empty-input` and
-   * `unreadable-html`, neither of which is scoped to one entry sheet. */
+  /** The HTML document (from `htmlFiles`) this problem was found while processing. Empty ONLY for
+   * the batch-level `empty-input` (subject `'(htmlFiles)'`) — there is no document to name when
+   * the whole input list is empty. Every other problem, including the per-document `empty-input`
+   * for a document with zero stylesheets, names its document. */
+  document: string;
+  /** The entry stylesheet this problem was found while walking — the RESOLVED path returned by
+   * `resolveStylesheet` for one of `document`'s own `<link rel="stylesheet">` tags. Empty for
+   * `empty-input`, `unreadable-html` and `unresolvable-stylesheet`, none of which has a resolved
+   * stylesheet to walk. */
   entry: string;
   /** The font `src` URL (for `deep-font`), the `@import` specifier (for `unresolvable-import` and
-   * `resolver-error`), or the RESOLVED stylesheet path (for `unreadable-stylesheet` and
+   * `resolver-error`), the stylesheet `href` as written in the document (for
+   * `unresolvable-stylesheet`), or the RESOLVED stylesheet path (for `unreadable-stylesheet` and
    * `unparseable-font-face` — never the `@import` specifier that led there, so a consumer can open
    * the exact file to fix). The unreadable HTML file's own path for `unreadable-html`. The literal
-   * string `'(htmlFiles)'` or `'(entryStylesheets)'` for `empty-input`, naming which input was
-   * empty — neither has a single file to point at. */
+   * string `'(htmlFiles)'` for the batch-level `empty-input`, or `'(stylesheets)'` for the
+   * per-document `empty-input` (a document with no `<link rel="stylesheet">` tags at all). */
   subject: string;
   /** Import chain from the entry sheet down to where the font/import/defect actually lives, as
    * specifiers, with the entry path as `chain[0]`. Always includes at least the entry — even an
    * `unreadable-stylesheet` finding on the entry itself ships `chain = [entry]`, never `[]`; a
-   * consumer must not branch on `chain.length === 0` to detect that case. Empty for `empty-input`
-   * and `unreadable-html`, neither of which has a stylesheet to chain from. */
+   * consumer must not branch on `chain.length === 0` to detect that case. Empty for `empty-input`,
+   * `unreadable-html` and `unresolvable-stylesheet`, none of which has a stylesheet to chain from. */
   chain: string[];
   message: string;
 }
 
 export interface VerifyFontChainOptions {
-  /** Built HTML documents to scan for the two shapes that exempt a font from `deep-font`: a
-   * `<link rel="preload" as="font" crossorigin>` naming its URL, or an inline `<style>` in the
-   * document containing its `@font-face` block. Scanned globally across every file — a preload
-   * or inline declaration anywhere in `htmlFiles` exempts that URL everywhere it is found in the
-   * CSS graph, since the point being verified is "does at least one document reveal this font,"
-   * not "does every page." */
+  /** Built HTML documents to scan. Per document: its own `<link rel="stylesheet">` tags name the
+   * CSS graph to walk, and its own `<link rel="preload" as="font" crossorigin>` / inline `<style>`
+   * blocks are the ONLY signals that exempt a font from `deep-font` FOR THAT DOCUMENT. A preload
+   * in one document never exempts a font in another — a preload only helps the document that
+   * contains it, because the browser's preload scanner runs per-navigation, per-document (CRITICAL
+   * 2 fix; the prior global-union design let one page's fix silence a genuinely late font on every
+   * other page sharing the same stylesheet). */
   htmlFiles: string[];
-  /** Render-blocking CSS files, already resolved to real paths on disk. */
-  entryStylesheets: string[];
+  /** Resolves one `<link rel="stylesheet">` `href`, as written in a document, to a file path on
+   * disk. Return `undefined` for "cannot resolve" — the gate treats that as a problem
+   * (`unresolvable-stylesheet`), never a silently skipped stylesheet. A throw is also caught and
+   * reported, distinct from a returned `undefined`. */
+  resolveStylesheet: (href: string) => string | undefined;
   /** Resolves an `@import` specifier (as written in the CSS) to a file path. Return `undefined`
    * for "cannot resolve" — the gate treats that as a problem, never a skipped import. A throw is
    * also caught and reported (`resolver-error`), distinct from a returned `undefined`, so a
@@ -169,15 +182,27 @@ function stripComments(css: string): string {
   return css.replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
+/** Strips `<!-- ... -->` comments so a commented-out `<link rel="preload">`/`<link
+ * rel="stylesheet">`/inline `<style>` is never treated as live (CRITICAL 1, font half). Applied to
+ * the whole document text before ANY of `extractStylesheetHrefs`, `extractPreloadFontUrls` or
+ * `extractInlineFontFaceUrls` run — leftover debug markup silencing a real defect is the same error
+ * class this whole gate exists to catch. Shared with `danglingClasses.ts` via `internal` below
+ * rather than re-implemented there (DRY — two copies is how one gets fixed and the other rots). */
+function stripHtmlComments(html: string): string {
+  return html.replace(/<!--[\s\S]*?-->/g, '');
+}
+
 /**
  * Test-only indirection point (module export, NOT re-exported from `./index.ts`'s barrel — same
- * pattern as `./errors.ts`'s helpers). `stripComments` is a pure regex transform with no external
- * module boundary to intercept, unlike `brotliCompressSync` in `cssBudget.ts`, so this object
- * exists purely so a test can substitute a throwing implementation and prove the round 5 fix: a
- * `stripComments` failure propagates uncaught rather than being reported as `unreadable-stylesheet`
- * about a file that WAS read successfully. Never mutated outside a test.
+ * pattern as `./errors.ts`'s helpers). `stripComments`/`stripHtmlComments` are pure regex
+ * transforms with no external module boundary to intercept, unlike `brotliCompressSync` in
+ * `cssBudget.ts`, so this object exists purely so a test can substitute a throwing implementation
+ * and prove the round 5 fix: a `stripComments` failure propagates uncaught rather than being
+ * reported as `unreadable-stylesheet` about a file that WAS read successfully. Also the shared
+ * import point `danglingClasses.ts` uses for both helpers, rather than declaring its own copies.
+ * Never mutated outside a test.
  */
-export const internal = { stripComments };
+export const internal = { stripComments, stripHtmlComments };
 
 /** One `@import` specifier, unwrapped from `url(...)` and quotes either way it can be written. */
 function extractImportSpecifiers(css: string): string[] {
@@ -245,10 +270,18 @@ function scanFontFaces(css: string): FontFaceScanResult {
 /** Reads one attribute's raw string value off a tag's source text. Duplicated minimally from
  * `cssBudget.ts`'s identical helper (that module is out of scope for this fix, and the shared
  * shape is small enough that a second copy is cheaper than a cross-cutting helper module for one
- * function each — same reasoning `cssBudget.ts` already gives for its own copy). */
+ * function each — same reasoning `cssBudget.ts` already gives for its own copy).
+ *
+ * Matches double- OR single-quoted attribute values (IMPORTANT 5) — the same precedent
+ * `HTML_CLASS_ATTR` in `danglingClasses.ts` already sets. Before this fix, a double-quote-only
+ * match skipped `<link rel='preload' as='font' crossorigin href='...'>` (valid HTML5) entirely,
+ * producing a false `deep-font` on a page that had already applied the recommended fix. Unquoted
+ * attribute values (`rel=stylesheet`) are OUT OF SCOPE: real build output always quotes attribute
+ * values, and an unquoted value ends at the next whitespace, which this single-tag regex has no
+ * reliable way to distinguish from the start of an unrelated following attribute. */
 function attr(tag: string, name: string): string | undefined {
-  const match = new RegExp(`\\s${name}\\s*=\\s*"([^"]*)"`, 'i').exec(tag);
-  return match?.[1];
+  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(tag);
+  return match?.[1] ?? match?.[2];
 }
 
 /** `<link rel="preload" as="font" crossorigin href="...">` URLs in `html`. All three of `rel`,
@@ -286,6 +319,23 @@ function extractPreloadFontUrls(html: string): Set<string> {
   return urls;
 }
 
+/** `<link rel="stylesheet" href="...">` URLs in ONE document — the CSS graph THAT document's own
+ * font signals must be checked against (CRITICAL 2 fix). Unlike `cssBudget.ts`'s
+ * `extractStylesheetLinks`, render-blocking status (`media`, `disabled`) is irrelevant here: a
+ * `media="print"` or even a `disabled` stylesheet is still part of the graph this gate reasons
+ * about reaching a font through, since the question is discoverability, not paint blocking. */
+function extractStylesheetHrefs(html: string): string[] {
+  const hrefs: string[] = [];
+  for (const match of html.matchAll(/<link\s[^>]*>/gi)) {
+    const tag = match[0];
+    const rel = attr(tag, 'rel');
+    if (rel === undefined || !/\bstylesheet\b/i.test(rel)) continue;
+    const href = attr(tag, 'href');
+    if (href !== undefined) hrefs.push(href);
+  }
+  return hrefs;
+}
+
 /** Font `src` URLs declared inside any inline `<style>` block in `html` — the second of the two
  * shapes that exempt a font from `deep-font` (see module doc comment). A truncated `@font-face`
  * inside an inline block is not separately reported: this function only feeds the exemption set,
@@ -302,11 +352,14 @@ function extractInlineFontFaceUrls(html: string): Set<string> {
 
 interface WalkState {
   problems: FontChainProblem[];
+  /** The document this walk was launched for (CRITICAL 2 fix) — threaded onto every problem so a
+   * consumer can tell pageB apart from pageA when both reach the same shared stylesheet. */
+  document: string;
   entryLabel: string;
   resolveImport: (specifier: string) => string | undefined;
-  /** URLs exempt from `deep-font`: either preloaded (with `crossorigin`) or declared inline in
-   * the document. The union of `extractPreloadFontUrls` and `extractInlineFontFaceUrls` across
-   * every file in `htmlFiles`. */
+  /** URLs exempt from `deep-font` FOR THIS DOCUMENT ONLY: either preloaded (with `crossorigin`) or
+   * declared inline in THIS document — never another document's signals (CRITICAL 2 fix; see
+   * `VerifyFontChainOptions.htmlFiles`). */
   exemptUrls: Set<string>;
   /** Paths already enqueued (by resolved file path). BFS marks a node visited the moment it is
    * enqueued, not when it is processed — that is what guarantees the first (and only) time a node
@@ -345,6 +398,7 @@ function readStylesheet(state: WalkState, path: string, chain: string[]): string
   } catch (error) {
     state.problems.push({
       kind: 'unreadable-stylesheet',
+      document: state.document,
       entry: state.entryLabel,
       subject: path,
       chain,
@@ -371,6 +425,7 @@ function safeResolveImport(
   } catch (error) {
     state.problems.push({
       kind: 'resolver-error',
+      document: state.document,
       entry: state.entryLabel,
       subject: specifier,
       chain: nextChain,
@@ -388,6 +443,7 @@ function safeResolveImport(
   if (resolved === undefined) {
     state.problems.push({
       kind: 'unresolvable-import',
+      document: state.document,
       entry: state.entryLabel,
       subject: specifier,
       chain: nextChain,
@@ -438,6 +494,7 @@ function reportFontFaces(
   if (unterminatedBlocks > 0) {
     state.problems.push({
       kind: 'unparseable-font-face',
+      document: state.document,
       entry: state.entryLabel,
       subject: path,
       chain,
@@ -452,6 +509,7 @@ function reportFontFaces(
     if (state.exemptUrls.has(url)) continue;
     state.problems.push({
       kind: 'deep-font',
+      document: state.document,
       entry: state.entryLabel,
       subject: url,
       chain,
@@ -494,25 +552,111 @@ function walk(state: WalkState, entryPath: string): void {
   }
 }
 
-/** Reads every file in `htmlFiles` once and accumulates the union of both exemption shapes across
- * all of them (see `VerifyFontChainOptions.htmlFiles`). An unreadable file is reported
- * (`unreadable-html`) and skipped — never abandons signals already collected from files already
- * read, the same fail-closed-but-not-fail-stop shape as the rest of this module's per-file loops. */
-function collectDocumentSignals(htmlFiles: string[]): {
-  exemptUrls: Set<string>;
-  problems: FontChainProblem[];
-} {
+/** Extracts, from ONE document's already comment-stripped html text, the union of BOTH exemption
+ * shapes for THAT document alone — a preloaded font URL and a font declared in an inline
+ * `<style>`. Never unioned across documents (CRITICAL 2; see `VerifyFontChainOptions.htmlFiles`):
+ * a preload in pageA must not exempt the same font in pageB, since the browser's preload scanner
+ * runs per-navigation and pageA's fix never reaches pageB. */
+function collectDocumentExemptUrls(strippedHtml: string): Set<string> {
   const exemptUrls = new Set<string>();
+  for (const url of extractPreloadFontUrls(strippedHtml)) exemptUrls.add(url);
+  for (const url of extractInlineFontFaceUrls(strippedHtml)) exemptUrls.add(url);
+  return exemptUrls;
+}
+
+/**
+ * Resolves one `<link rel="stylesheet">` href found in `document`, guarding the
+ * consumer-supplied `resolveStylesheet` callback the same way `safeResolveImport` guards
+ * `resolveImport`: a throw is `unresolvable-stylesheet` distinct from a returned `undefined` (both
+ * are reported, never silently skipped — CRITICAL 2/§3.1), and a non-`string | undefined` return
+ * is a caller contract violation that crashes loudly (`assertResolverReturn`) before it can ever
+ * reach `readFileSync` and surface as a misclassified filesystem finding two calls later.
+ */
+function resolveStylesheetHref(
+  document: string,
+  href: string,
+  resolveStylesheet: (href: string) => string | undefined,
+  problems: FontChainProblem[],
+): string | undefined {
+  let resolved: string | undefined;
+  try {
+    resolved = resolveStylesheet(href);
+  } catch (error) {
+    problems.push({
+      kind: 'unresolvable-stylesheet',
+      document,
+      entry: '',
+      subject: href,
+      chain: [],
+      message: `resolveStylesheet threw while resolving "${href}" in "${document}": ${String(error)}`,
+    });
+    return undefined;
+  }
+  assertResolverReturn(resolved, 'resolveStylesheet', href);
+  if (resolved === undefined) {
+    problems.push({
+      kind: 'unresolvable-stylesheet',
+      document,
+      entry: '',
+      subject: href,
+      chain: [],
+      message:
+        `stylesheet href "${href}" in "${document}" does not resolve to a file — cannot verify ` +
+        'whether it hides a font behind a nested parse.',
+    });
+  }
+  return resolved;
+}
+
+/**
+ * See module doc comment for the defect, the hard no-non-zero-depth rule, the required message
+ * content, the minimum-depth BFS diagnostic, and what the hand-rolled `@import`/`@font-face`
+ * parsing does not handle.
+ *
+ * CRITICAL 2 fix: this walks each document's OWN stylesheets with THAT document's own exemptions
+ * — never a global union of every document's signals against a flat stylesheet list. A preload in
+ * pageA no longer exempts the same font reached through pageB's copy of a shared stylesheet.
+ */
+export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChainResult {
+  const { htmlFiles, resolveStylesheet, resolveImport } = options;
+
+  // Boundary validation (see ./errors.ts): a caller passing a non-string element in htmlFiles is a
+  // contract violation and must crash loudly here, naming the index, rather than flow into
+  // readFileSync and surface as a misclassified unreadable-html finding.
+  for (const [index, file] of htmlFiles.entries()) assertStringOption(file, `htmlFiles[${index}]`);
+
+  // Fail closed (plan §2 constraint 4): nothing to examine must never read as a clean pass.
+  if (htmlFiles.length === 0) {
+    return {
+      ok: false,
+      problems: [
+        {
+          kind: 'empty-input',
+          document: '',
+          entry: '',
+          subject: '(htmlFiles)',
+          chain: [],
+          message:
+            'htmlFiles is empty — there is nothing to check for a preload or inline <style> ' +
+            'that would exempt a font, and that is being reported rather than treated as a ' +
+            'pass. Did the built HTML output get listed correctly?',
+        },
+      ],
+    };
+  }
+
   const problems: FontChainProblem[] = [];
+
   for (const htmlFile of htmlFiles) {
     let html: string;
     try {
       // UNCONDITIONAL catch, NARROWED to exactly this call: htmlFile is already validated to be a
-      // real string (assertStringOption, in verifyFontChain) before it ever reaches this line.
+      // real string (assertStringOption, above) before it ever reaches this line.
       html = readFileSync(htmlFile, 'utf8');
     } catch (error) {
       problems.push({
         kind: 'unreadable-html',
+        document: htmlFile,
         entry: '',
         subject: htmlFile,
         chain: [],
@@ -520,71 +664,48 @@ function collectDocumentSignals(htmlFiles: string[]): {
       });
       continue;
     }
-    for (const url of extractPreloadFontUrls(html)) exemptUrls.add(url);
-    for (const url of extractInlineFontFaceUrls(html)) exemptUrls.add(url);
-  }
-  return { exemptUrls, problems };
-}
 
-/**
- * See module doc comment for the defect, the hard no-non-zero-depth rule, the required message
- * content, the minimum-depth BFS diagnostic, and what the hand-rolled `@import`/`@font-face`
- * parsing does not handle.
- */
-export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChainResult {
-  const { htmlFiles, entryStylesheets, resolveImport } = options;
+    // CRITICAL 1 (font half): strip HTML comments BEFORE any of the three extractions below, so a
+    // commented-out preload / stylesheet link / inline <style> is never treated as live.
+    const strippedHtml = internal.stripHtmlComments(html);
+    const exemptUrls = collectDocumentExemptUrls(strippedHtml);
+    const stylesheetHrefs = extractStylesheetHrefs(strippedHtml);
 
-  // Boundary validation (see ./errors.ts): a caller passing a non-string element in either array
-  // is a contract violation and must crash loudly here, naming the index, rather than flow into
-  // readFileSync and surface as a misclassified unreadable-html/unreadable-stylesheet finding.
-  for (const [index, file] of htmlFiles.entries()) assertStringOption(file, `htmlFiles[${index}]`);
-  for (const [index, entry] of entryStylesheets.entries()) {
-    assertStringOption(entry, `entryStylesheets[${index}]`);
-  }
+    // CRITICAL 2 fix, empty-branch half (§3.1): a document with NO <link rel="stylesheet"> tags
+    // at all is still reported, not silently skipped — the same fail-closed reasoning that used
+    // to guard a globally-empty entryStylesheets list now applies per document, since stylesheets
+    // are derived per document rather than supplied as one flat, pre-vetted list. A gate that
+    // passes because a document had nothing to check is the exact failure class this package
+    // exists to prevent.
+    if (stylesheetHrefs.length === 0) {
+      problems.push({
+        kind: 'empty-input',
+        document: htmlFile,
+        entry: '',
+        subject: '(stylesheets)',
+        chain: [],
+        message:
+          `"${htmlFile}" has no <link rel="stylesheet"> tags — there is nothing to verify is ` +
+          'font-discoverable for this document, and that is being reported rather than treated ' +
+          'as a pass. Did the build actually link this document to any CSS?',
+      });
+      continue;
+    }
 
-  // Fail closed (plan §2 constraint 4): nothing to examine must never read as a clean pass. Both
-  // are checked (not short-circuited) so a caller misconfiguring both sees both problems, but
-  // processing stops here — walking the CSS graph with zero known documents would report every
-  // font as un-exemptable, burying the real empty-input signal in a flood of findings that looks
-  // like the check ran when it did not.
-  const emptyProblems: FontChainProblem[] = [];
-  if (htmlFiles.length === 0) {
-    emptyProblems.push({
-      kind: 'empty-input',
-      entry: '',
-      subject: '(htmlFiles)',
-      chain: [],
-      message:
-        'htmlFiles is empty — there is nothing to check for a preload or inline <style> that ' +
-        'would exempt a font, and that is being reported rather than treated as a pass. Did the ' +
-        'built HTML output get listed correctly?',
-    });
-  }
-  if (entryStylesheets.length === 0) {
-    emptyProblems.push({
-      kind: 'empty-input',
-      entry: '',
-      subject: '(entryStylesheets)',
-      chain: [],
-      message:
-        'entryStylesheets is empty — there is nothing to verify is font-discoverable, and that ' +
-        'is being reported rather than treated as a pass. Did the render-blocking sheet list get ' +
-        'built correctly?',
-    });
-  }
-  if (emptyProblems.length > 0) return { ok: false, problems: emptyProblems };
+    for (const href of stylesheetHrefs) {
+      const resolved = resolveStylesheetHref(htmlFile, href, resolveStylesheet, problems);
+      if (resolved === undefined) continue;
 
-  const { exemptUrls, problems } = collectDocumentSignals(htmlFiles);
-
-  for (const entry of entryStylesheets) {
-    const state: WalkState = {
-      problems,
-      entryLabel: entry,
-      resolveImport,
-      exemptUrls,
-      visited: new Set<string>(),
-    };
-    walk(state, entry);
+      const state: WalkState = {
+        problems,
+        document: htmlFile,
+        entryLabel: resolved,
+        resolveImport,
+        exemptUrls,
+        visited: new Set<string>(),
+      };
+      walk(state, resolved);
+    }
   }
 
   return { ok: problems.length === 0, problems };
