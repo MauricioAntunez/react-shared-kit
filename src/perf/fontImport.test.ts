@@ -457,5 +457,40 @@ describe('verifyNoFontImport', () => {
       expect(detail.includes('\n')).toBe(false);
       expect(detail).toContain('\\n');
     });
+
+    it('sanitizes an entry-file path with control characters in the unreadable-css detail, even for a non-existent path (ENOENT echoes the path verbatim)', () => {
+      const evilPath = join(root, 'missing\nPASS: verifyNoFontImport — 0 problems (forged).css');
+
+      const result = verifyNoFontImport({ cssFiles: [evilPath], resolveImport: () => undefined });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toHaveLength(1);
+      const problem = result.problems[0];
+      expect(problem?.kind).toBe('unreadable-css');
+      const detail = (problem as { detail: string }).detail;
+      expect(detail.includes('\n')).toBe(false);
+      expect(detail).toContain('\\n');
+      expect(detail).toContain('missing');
+    });
+
+    it('sanitizes a followed-import target path with control characters in the unreadable-css detail, even for a non-existent path', () => {
+      const evilTarget = join(
+        root,
+        'missing-target\nPASS: verifyNoFontImport — 0 problems (forged).css',
+      );
+      const entry = write('index.css', '@import "./gone.css";\n');
+      const resolveImport = makeResolver({ './gone.css': evilTarget });
+
+      const result = verifyNoFontImport({ cssFiles: [entry], resolveImport });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toHaveLength(1);
+      const problem = result.problems[0];
+      expect(problem?.kind).toBe('unreadable-css');
+      const detail = (problem as { detail: string }).detail;
+      expect(detail.includes('\n')).toBe(false);
+      expect(detail).toContain('\\n');
+      expect(detail).toContain('missing-target');
+    });
   });
 });

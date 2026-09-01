@@ -343,7 +343,7 @@ function readAndScanTarget(target: string): TargetOutcome {
       problem: {
         kind: 'unreadable-css',
         file: target,
-        detail: `could not read "${target}": ${String(error)}`,
+        detail: `could not read "${sanitizeTagText(target)}": ${sanitizeTagText(String(error))}`,
       },
     };
   }
@@ -588,7 +588,7 @@ export function verifyNoFontImport(options: VerifyNoFontImportOptions): VerifyNo
       problems.push({
         kind: 'unreadable-css',
         file,
-        detail: `could not read "${file}": ${String(error)}`,
+        detail: `could not read "${sanitizeTagText(file)}": ${sanitizeTagText(String(error))}`,
       });
       continue;
     }

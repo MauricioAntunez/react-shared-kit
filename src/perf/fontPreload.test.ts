@@ -87,7 +87,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [clean, broken],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -116,7 +116,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -145,7 +145,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
@@ -166,7 +166,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -194,7 +194,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -227,7 +227,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [entryCss, chunkCss],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 2,
     });
 
     expect(result.ok).toBe(false);
@@ -253,7 +253,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -279,7 +279,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -305,7 +305,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -389,7 +389,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref: () => undefined,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -411,7 +411,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -438,7 +438,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -473,7 +473,7 @@ describe('verifyFontPreload', () => {
       htmlFiles: [html],
       cssFiles: [css],
       resolveHref,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -510,7 +510,7 @@ describe('verifyFontPreload', () => {
         htmlFiles: [html],
         cssFiles: [css],
         resolveHref: badResolver,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
     } catch (error) {
       caught = error;
@@ -581,11 +581,17 @@ describe('verifyFontPreload', () => {
         htmlFiles: [html],
         cssFiles: [chunk],
         resolveHref,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       expect(result.ok).toBe(false);
       expect(result.problems).toEqual([
+        expect.objectContaining({
+          kind: 'under-declared-faces',
+          html,
+          count: 0,
+          expected: 1,
+        }),
         expect.objectContaining({
           kind: 'font-preload-unpaired',
           html,
@@ -674,7 +680,7 @@ describe('verifyFontPreload', () => {
         htmlFiles: [html],
         cssFiles: [known],
         resolveHref,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       expect(result.ok).toBe(false);
@@ -683,6 +689,12 @@ describe('verifyFontPreload', () => {
           kind: 'unscanned-stylesheet',
           html,
           href: '/mystery.css',
+        }),
+        expect.objectContaining({
+          kind: 'under-declared-faces',
+          html,
+          count: 0,
+          expected: 1,
         }),
       ]);
     });
@@ -714,7 +726,7 @@ describe('verifyFontPreload', () => {
         htmlFiles: [html],
         cssFiles: [css],
         resolveHref: craftedResolver,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       expect(result.ok).toBe(false);
@@ -756,7 +768,7 @@ describe('verifyFontPreload', () => {
         htmlFiles: [html],
         cssFiles: [],
         resolveHref,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       expect(result.ok).toBe(false);
@@ -794,7 +806,7 @@ describe('verifyFontPreload', () => {
         htmlFiles: [html],
         cssFiles: [known],
         resolveHref,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       expect(result.ok).toBe(false);
@@ -805,6 +817,76 @@ describe('verifyFontPreload', () => {
       // Sanitization must ESCAPE, not destroy: the message still names the offending href.
       expect(problem?.detail).toContain('\\n');
       expect(problem?.detail).toContain('/evil');
+    });
+  });
+
+  describe('FINDING 1 — expectedFacesPerDocument is a validated anti-vacuity floor (PR #8 CRITICAL)', () => {
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2.5])(
+      'throws TypeError naming expectedFacesPerDocument for %p',
+      (bad) => {
+        const html = write('index.html', '<html><head></head></html>');
+
+        let caught: unknown;
+        try {
+          verifyFontPreload({
+            htmlFiles: [html],
+            cssFiles: [],
+            resolveHref,
+            // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the floor's contract
+            expectedFacesPerDocument: bad as any,
+          });
+        } catch (error) {
+          caught = error;
+        }
+
+        expect(caught).toBeInstanceOf(TypeError);
+        expect((caught as Error).message).toContain('expectedFacesPerDocument');
+      },
+    );
+
+    it('a floor of 0 no longer disables the check — reproduces the 2026.831.3 vacuous pass as a throw instead', () => {
+      const docB = write('b.html', '<html><head></head></html>');
+
+      let caught: unknown;
+      try {
+        verifyFontPreload({
+          htmlFiles: [docB],
+          cssFiles: [],
+          resolveHref,
+          // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the floor's contract
+          expectedFacesPerDocument: 0 as any,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(TypeError);
+    });
+  });
+
+  describe('FINDING 2 — String(error) is sanitized too, not just href (PR #8 HIGH)', () => {
+    it('sanitizes a log-injection payload carried in a non-existent html path via String(error)', () => {
+      const evilPath = join(
+        root,
+        'nonexistent\n<<<INJECTED>>> font-preload: OK, 0 problems\npost.html',
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [evilPath],
+        cssFiles: [],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result.ok).toBe(false);
+      const problem = result.problems.find((p) => p.kind === 'unreadable-html');
+      expect(problem).toBeDefined();
+      expect(problem?.detail.includes('\n')).toBe(false);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are ABSENT
+      expect(/[\x00-\x1f\x7f]/.test(problem?.detail ?? '')).toBe(false);
+      // Sanitization must ESCAPE, not destroy: the message still identifies the offending file.
+      expect(problem?.detail).toContain('\\n');
+      expect(problem?.detail).toContain('nonexistent');
     });
   });
 });

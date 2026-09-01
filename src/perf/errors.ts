@@ -83,6 +83,44 @@ export function assertStringOption(value: unknown, optionName: string): asserts 
 }
 
 /**
+ * Enforces a required ANTI-VACUITY FLOOR option: an integer strictly greater than zero.
+ *
+ * WHY A RUNTIME CHECK AND NOT JUST `number`. `verifyFontChain` and `verifyFontPreload` both take an
+ * `expectedFacesPerDocument` floor, made REQUIRED so a consumer cannot omit it and silently get a
+ * gate that passes having examined nothing. TypeScript proves a number was passed; it cannot prove
+ * the number is a real floor. Three review lenses independently reproduced the gap that leaves:
+ *
+ *   floor = 0 or negative  ->  `size >= floor` is always true  ->  the floor NEVER fires, for any
+ *                              document, restoring the exact vacuous pass the option exists to
+ *                              close — and `ok: true` with zero faces examined is what shipped in
+ *                              2026.831.3 and prompted the option in the first place.
+ *   floor = NaN | Infinity ->  `size >= floor` is always false ->  the floor fires on EVERY
+ *                              document, including correct ones, breaking a healthy build (and
+ *                              `NaN` serialises to `null` in the problem's `expected` field, so the
+ *                              message cannot even be read).
+ *   floor = 2.5            ->  behaves as a ceiling of 3 while reporting "expected at least 2.5".
+ *
+ * `0` is not hypothetical: it is what a migration reaches for first. This package's own test suite
+ * pinned it at 70 call sites while adapting to the breaking change, and a consumer computing
+ * `Math.min(...perRouteCounts)` or `Number(process.env.MIN_FACES ?? '0')` lands on it by accident.
+ *
+ * `0` is DELIBERATELY NOT accepted as "floor disabled". An opt-out spelling would relocate the same
+ * silent reopening one level up into a documented default, which is how the original defect got in.
+ * A build that genuinely ships no webfonts has no reason to run a font-floor gate over it.
+ */
+export function assertPositiveIntegerOption(
+  value: unknown,
+  optionName: string,
+): asserts value is number {
+  if (Number.isInteger(value) && (value as number) > 0) return;
+  throw new TypeError(
+    `${optionName} must be an integer greater than 0 — it is an anti-vacuity floor, and a value ` +
+      `of 0 or less disables it silently while the gate still reports ok. Received ` +
+      `${describeValue(value)}.`,
+  );
+}
+
+/**
  * Maximum length of a token handed to a CONSUMER-SUPPLIED `hashPattern` (`headers.ts`'s
  * `checkAssetsHashed`, `danglingClasses.ts`'s `extractHashedClasses`/`logicalName`) before it is
  * matched.

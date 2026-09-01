@@ -128,7 +128,7 @@
  * this floor is necessary, not sufficient.
  */
 import { readFileSync } from 'node:fs';
-import { assertResolverReturn, assertStringOption } from './errors.ts';
+import { assertPositiveIntegerOption, assertResolverReturn, assertStringOption } from './errors.ts';
 import {
   attr,
   extractImportSpecifiers,
@@ -356,7 +356,15 @@ export interface VerifyFontChainOptions {
    * `<link rel="stylesheet">` graph — deep or exempt, it still counts as "discovered") before the
    * document is considered to have declared any fonts at all. REQUIRED — see the module doc
    * comment (anti-vacuity section) for why an optional floor recreates the exact vacuous "0 faces
-   * examined, ok: true" pass this option exists to close, and for what a count floor cannot see. */
+   * examined, ok: true" pass this option exists to close, and for what a count floor cannot see.
+   *
+   * NOT INTERCHANGEABLE WITH `VerifyFontPreloadOptions.expectedFacesPerDocument` IN
+   * `./fontPreload.ts`, despite the identical name and doc-comment framing: THIS gate's "discovered"
+   * means SYNTACTIC presence — every `src:` URL string this hand-rolled scanner finds in the CSS
+   * text, whether or not anything on disk actually resolves it. The sibling gate's "discovered"
+   * means RESOLVED presence — only URLs `resolveHref` actually located on disk. A document with 3
+   * faces where one has a typo'd `src:` reports `count: 3` here and `count: 2` there. Pin each
+   * gate's floor to what THAT gate itself counts; do not reuse one number across both. */
   expectedFacesPerDocument: number;
 }
 
@@ -808,7 +816,7 @@ function checkFacesFloor(
     count: allFaceUrls.size,
     expected: expectedFacesPerDocument,
     message:
-      `"${htmlFile}" has ${allFaceUrls.size} distinct discoverable font url(s) — its own inline ` +
+      `"${sanitizeTagText(htmlFile)}" has ${allFaceUrls.size} distinct discoverable font url(s) — its own inline ` +
       '@font-face declarations plus every font url found while walking its own stylesheet graph — ' +
       `expected at least ${expectedFacesPerDocument}. A document with fewer faces than expected, ` +
       'including zero, is reported rather than treated as a pass: this is the anti-vacuity floor ' +
@@ -841,7 +849,7 @@ function resolveStylesheetHref(
       href,
       message:
         `resolveStylesheet threw while resolving "${sanitizeTagText(href)}" in ` +
-        `"${document}": ${sanitizeTagText(String(error))}`,
+        `"${sanitizeTagText(document)}": ${sanitizeTagText(String(error))}`,
     });
     return undefined;
   }
@@ -852,8 +860,8 @@ function resolveStylesheetHref(
       document,
       href,
       message:
-        `stylesheet href "${sanitizeTagText(href)}" in "${document}" does not resolve to a ` +
-        'file — cannot verify whether it hides a font behind a nested parse.',
+        `stylesheet href "${sanitizeTagText(href)}" in "${sanitizeTagText(document)}" does not ` +
+        'resolve to a file — cannot verify whether it hides a font behind a nested parse.',
     });
   }
   return resolved;
@@ -885,7 +893,7 @@ function processDocument(
       kind: 'unreadable-html',
       document: htmlFile,
       html: htmlFile,
-      message: `could not read "${htmlFile}": ${String(error)}`,
+      message: `could not read "${sanitizeTagText(htmlFile)}": ${sanitizeTagText(String(error))}`,
     });
     return;
   }
@@ -909,7 +917,7 @@ function processDocument(
       document: htmlFile,
       html: htmlFile,
       message:
-        `"${htmlFile}" contains an unterminated <!-- HTML comment — every byte from that point ` +
+        `"${sanitizeTagText(htmlFile)}" contains an unterminated <!-- HTML comment — every byte from that point ` +
         'to the end of the file was treated as inside the comment and never examined for ' +
         'stylesheets, preload links, or inline <style> blocks. A truncated build artifact must ' +
         'not be allowed to read as a clean pass just because nothing else was found.',
@@ -927,7 +935,7 @@ function processDocument(
       document: htmlFile,
       tag,
       message:
-        `"${htmlFile}" has a <link rel="stylesheet"> with no usable href (${tag}) — this tag ` +
+        `"${sanitizeTagText(htmlFile)}" has a <link rel="stylesheet"> with no usable href (${tag}) — this tag ` +
         'cannot be walked for fonts and is reported rather than silently dropped.',
     });
   }
@@ -946,7 +954,7 @@ function processDocument(
         document: htmlFile,
         input: '(stylesheets)',
         message:
-          `"${htmlFile}" has no <link rel="stylesheet"> tags — there is nothing to verify is ` +
+          `"${sanitizeTagText(htmlFile)}" has no <link rel="stylesheet"> tags — there is nothing to verify is ` +
           'font-discoverable for this document, and that is being reported rather than treated ' +
           'as a pass. Did the build actually link this document to any CSS?',
       });
@@ -999,6 +1007,7 @@ export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChai
   // contract violation and must crash loudly here, naming the index, rather than flow into
   // readFileSync and surface as a misclassified unreadable-html finding.
   for (const [index, file] of htmlFiles.entries()) assertStringOption(file, `htmlFiles[${index}]`);
+  assertPositiveIntegerOption(expectedFacesPerDocument, 'expectedFacesPerDocument');
 
   // Fail closed (plan §2 constraint 4): nothing to examine must never read as a clean pass.
   if (htmlFiles.length === 0) {

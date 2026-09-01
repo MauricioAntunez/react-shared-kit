@@ -73,7 +73,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -104,7 +104,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './nested-minified.css': nested }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -137,7 +137,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: resolverFor({ [`./nested-k3-${i}.css`]: nested }),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       const problem = result.problems.find((p) => p.kind === 'deep-font');
@@ -171,7 +171,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './nested-multi.css': nested }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -196,7 +196,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
@@ -216,7 +216,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -239,7 +239,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
@@ -257,7 +257,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './fonts.css': fontsSheet }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -281,7 +281,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './mid.css': mid, './leaf.css': leaf }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -308,7 +308,7 @@ describe('verifyFontChain', () => {
       // @ts-expect-error maxChainDepth is not part of the options type any more
       maxChainDepth: 99,
       resolveImport: resolverFor({ './leaf-nothresh.css': leaf }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -329,7 +329,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './fonts-swap.css': fontsSheet }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     const problem = result.problems.find((p) => p.kind === 'deep-font');
@@ -349,7 +349,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     const problem = result.problems.find((p) => p.kind === 'deep-font');
@@ -369,7 +369,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -388,7 +388,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: missing }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -398,6 +398,14 @@ describe('verifyFontChain', () => {
         kind: 'unreadable-stylesheet',
         stylesheet: missing,
         document: html,
+      }),
+      // No font ever discovered for this document (the entry never read) — the anti-vacuity floor
+      // fires too, alongside the unreadable-stylesheet finding, never in place of it.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
       }),
     ]);
   });
@@ -424,7 +432,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: aPath }),
       resolveImport: resolverFor({ './a.css': aPath, './b.css': bPath }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -448,7 +456,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './a-order.css': a, './c.css': c }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -468,7 +476,7 @@ describe('verifyFontChain', () => {
       resolveImport: () => {
         throw boom;
       },
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -492,13 +500,21 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
       // K5 item 3: document is pinned at this emission site too.
       expect.objectContaining({ kind: 'unparseable-font-face', stylesheet: entry, document: html }),
+      // The truncated block contributes no URL to discoveredFaceUrls, so the anti-vacuity floor
+      // fires too, alongside unparseable-font-face, never in place of it.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
+      }),
     ]);
   });
 
@@ -519,7 +535,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ 'nested-specifier.css': nestedRealFile }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -557,7 +573,7 @@ describe('verifyFontChain', () => {
         './n.css': n,
         './shared.css': shared,
       }),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -575,7 +591,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: missing }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     const problem = result.problems.find((p) => p.kind === 'unreadable-stylesheet');
@@ -597,7 +613,7 @@ describe('verifyFontChain', () => {
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
         resolveImport: (() => ({ notAPath: true })) as any,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
     } catch (error) {
       caught = error;
@@ -622,7 +638,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: () => new URL('https://example.com/whatever.css') as unknown as string,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
     } catch (error) {
       caught = error;
@@ -644,7 +660,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: () => proxyReturn,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
     } catch (error) {
       caught = error;
@@ -667,12 +683,19 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: () => nulBytePath,
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'unreadable-stylesheet', stylesheet: nulBytePath }),
+      // No font ever discovered for this document — the anti-vacuity floor fires too.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
+      }),
     ]);
   });
 
@@ -688,12 +711,19 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: () => root, // a real directory, not a file
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'unreadable-stylesheet', stylesheet: root }),
+      // No font ever discovered for this document — the anti-vacuity floor fires too.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
+      }),
     ]);
   });
 
@@ -717,7 +747,7 @@ describe('verifyFontChain', () => {
           htmlFiles: [html],
           resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
           resolveImport: () => undefined,
-          expectedFacesPerDocument: 0,
+          expectedFacesPerDocument: 1,
         }),
       ).toThrow('BUG: comment-stripping regex blew up');
     } finally {
@@ -741,7 +771,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -764,7 +794,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     // The document now has zero LIVE stylesheets — it must be reported as such (see the
@@ -773,6 +803,14 @@ describe('verifyFontChain', () => {
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'empty-input', document: html, input: '(stylesheets)' }),
+      // The commented-out font is invisible and no other font signal exists — the anti-vacuity
+      // floor fires too, alongside empty-input.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
+      }),
     ]);
   });
 
@@ -798,12 +836,20 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'unterminated-html-comment', document: html, html }),
+      // The entry stylesheet is clean of fonts and nothing else was found — the anti-vacuity floor
+      // fires too, alongside unterminated-html-comment.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
+      }),
     ]);
   });
 
@@ -821,7 +867,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -845,7 +891,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [pageA, pageB],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: shared }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -863,12 +909,19 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'empty-input', document: html, input: '(stylesheets)' }),
+      // No stylesheet, no inline face — the anti-vacuity floor fires too, alongside empty-input.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
+      }),
     ]);
   });
 
@@ -879,7 +932,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -888,6 +941,13 @@ describe('verifyFontChain', () => {
         kind: 'unresolvable-stylesheet',
         document: html,
         href: STYLESHEET_HREF,
+      }),
+      // No font ever discovered for this document — the anti-vacuity floor fires too.
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
       }),
     ]);
   });
@@ -902,7 +962,7 @@ describe('verifyFontChain', () => {
         throw boom;
       },
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -927,7 +987,7 @@ describe('verifyFontChain', () => {
         // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
         resolveStylesheet: (() => ({ notAPath: true })) as any,
         resolveImport: resolverFor({}),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
     } catch (error) {
       caught = error;
@@ -955,7 +1015,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
@@ -980,7 +1040,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -996,7 +1056,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1011,19 +1071,33 @@ describe('verifyFontChain', () => {
 
   it('RED: fires a per-document empty-input when a document has no <link rel="stylesheet"> tags, alongside a clean sibling document', () => {
     const entry = write('entry-mixed-empty.css', `body { color: red; }`);
-    const withStylesheet = htmlWithStylesheet('index-with-stylesheet.html');
+    // Declares its own inline @font-face so it genuinely satisfies the floor and stays the "clean
+    // sibling" the test name promises — without this, floor=1 would ALSO flag it as
+    // under-declared, which is not what this test is about.
+    const withStylesheet = htmlWithStylesheet(
+      'index-with-stylesheet.html',
+      "<style>@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }</style>",
+    );
     const withoutStylesheet = htmlWithNoStylesheet('index-without-stylesheet.html');
 
     const result = verifyFontChain({
       htmlFiles: [withStylesheet, withoutStylesheet],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
     expect(result.problems).toEqual([
       expect.objectContaining({ kind: 'empty-input', document: withoutStylesheet }),
+      // withoutStylesheet has no stylesheet AND no inline face — the anti-vacuity floor fires too,
+      // alongside empty-input. withStylesheet is unaffected (its inline face satisfies the floor).
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: withoutStylesheet,
+        count: 0,
+        expected: 1,
+      }),
     ]);
   });
 
@@ -1040,7 +1114,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [badHtml],
         resolveStylesheet: noStylesheets,
         resolveImport: resolverFor({}),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
     } catch {
       threw = true;
@@ -1072,7 +1146,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [badHtml, goodHtml],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.problems.some((p) => p.kind === 'unreadable-html')).toBe(true);
@@ -1087,7 +1161,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [{ notAPath: true } as any],
         resolveStylesheet: noStylesheets,
         resolveImport: resolverFor({}),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
     } catch (error) {
       caught = error;
@@ -1117,7 +1191,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1142,7 +1216,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1151,6 +1225,14 @@ describe('verifyFontChain', () => {
         kind: 'malformed-stylesheet-link',
         document: html,
         tag: '<link rel="stylesheet">',
+      }),
+      // No font ever discovered for this document — the anti-vacuity floor fires too, alongside
+      // malformed-stylesheet-link (never in place of the empty-input this test's title is about).
+      expect.objectContaining({
+        kind: 'under-declared-faces',
+        document: html,
+        count: 0,
+        expected: 1,
       }),
     ]);
     // The old, now-inaccurate message ("has no <link rel="stylesheet"> tags") must not appear —
@@ -1173,7 +1255,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1200,7 +1282,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1227,7 +1309,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
@@ -1247,7 +1329,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
@@ -1277,7 +1359,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
@@ -1344,7 +1426,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1368,7 +1450,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1394,7 +1476,7 @@ describe('verifyFontChain', () => {
         resolveImportCalled = true;
         return undefined;
       },
-      expectedFacesPerDocument: 0,
+      expectedFacesPerDocument: 1,
     });
 
     expect(result.ok).toBe(false);
@@ -1606,7 +1688,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: () => undefined,
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       const problem = result.problems.find((p) => p.kind === 'unresolvable-import');
@@ -1632,7 +1714,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: () => undefined,
         resolveImport: resolverFor({}),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       const problem = result.problems.find((p) => p.kind === 'unresolvable-stylesheet');
@@ -1662,7 +1744,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: resolverFor({ [forgedSpecifier]: nested }),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       const problem = result.problems.find((p) => p.kind === 'deep-font');
@@ -1693,7 +1775,7 @@ describe('verifyFontChain', () => {
         resolveImport: () => {
           throw thrown;
         },
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       const problem = result.problems.find((p) => p.kind === 'resolver-error');
@@ -1719,7 +1801,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: resolverFor({ [forgedSpecifier]: nested }),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       const problem = result.problems.find((p) => p.kind === 'unparseable-font-face');
@@ -1745,7 +1827,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: resolverFor({ [forgedSpecifier]: nested }),
-        expectedFacesPerDocument: 0,
+        expectedFacesPerDocument: 1,
       });
 
       const problem = result.problems.find((p) => p.kind === 'oversized-url');
@@ -1755,6 +1837,117 @@ describe('verifyFontChain', () => {
       expect(message).toContain('\\n');
       expect(message).toContain('./oversized.css');
       expect(message).toContain('[PASS] font-chain forged clean');
+    });
+
+    it("sanitizes a document path carrying \\n + a forged PASS line before it reaches under-declared-faces's message", () => {
+      // Round-3 review finding: checkFacesFloor's message was a BRAND-NEW site, added in the
+      // fix that introduced expectedFacesPerDocument, and it was never sanitized. `htmlFile` here
+      // is the document path itself — an SSG deriving a filename from a CMS slug can produce a
+      // path containing a newline (POSIX allows any byte but "/" and NUL).
+      const forgedName = 'evil\n[PASS] font-chain: no deep fonts found, all clear).post.html';
+      const html = htmlWithNoStylesheet(forgedName);
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: noStylesheets,
+        resolveImport: resolverFor({}),
+        expectedFacesPerDocument: 1,
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'under-declared-faces');
+      expect(problem).toBeDefined();
+      const message = problem?.message ?? '';
+      assertNoRawControlChars(message);
+      // Asserts BOTH halves (round-3 review's exact "weak shape" caveat): the raw control
+      // character is gone from message, AND the message still identifies the offending file via a
+      // stable substring — an absence-only assertion (`!includes('\n')`) would still pass if
+      // sanitizeTagText were replaced by a function returning a constant.
+      expect(message).toContain('\\n');
+      expect(message).toContain('evil');
+      expect(message).toContain('[PASS] font-chain');
+      expect(message).toContain('post.html');
+      // The structured `document` field stays raw for programmatic consumers.
+      expect(problem?.document).toBe(html);
+    });
+  });
+
+  // --- Finding 2: a preload-only URL (no matching @font-face anywhere) must not inflate the floor
+  describe('preload-only URLs are excluded from the expectedFacesPerDocument floor', () => {
+    it('RED: fires under-declared-faces (count: 0) for a document whose ONLY font signal is a dangling <link rel="preload">, never counting it as a declared face', () => {
+      // `collectDocumentSignals` keeps `inlineFontFaceUrls` separate from `exemptUrls` (= inline
+      // union preload) precisely so a dangling preload cannot count as a declared face. Swapping
+      // `inlineFontFaceUrls` for `exemptUrls` at either checkFacesFloor call site would make this
+      // test pass with `count: 1` instead of `count: 0` — see the RED proof in this task's report.
+      const htmlWithPreload = write(
+        'index-preload-only.html',
+        '<!doctype html><html><head>' +
+          '<link rel="preload" as="font" crossorigin href="/dangling.woff2">' +
+          '</head><body>hi</body></html>',
+      );
+
+      const result = verifyFontChain({
+        htmlFiles: [htmlWithPreload],
+        resolveStylesheet: noStylesheets,
+        resolveImport: resolverFor({}),
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result.ok).toBe(false);
+      const problem = result.problems.find((p) => p.kind === 'under-declared-faces');
+      expect(problem).toBeDefined();
+      expect(problem?.count).toBe(0);
+      expect(problem?.expected).toBe(1);
+    });
+  });
+
+  // --- Finding 1: expectedFacesPerDocument is an anti-vacuity floor, not a plain number — 0,
+  // negative, non-integer, NaN, and Infinity must all throw rather than silently disabling it.
+  describe('expectedFacesPerDocument rejects every value that would silently disable the floor', () => {
+    const html = () => htmlWithNoStylesheet('index-floor-validation.html');
+    const baseArgs = () => ({
+      resolveStylesheet: noStylesheets,
+      resolveImport: resolverFor({}),
+    });
+
+    it('RED: throws a TypeError naming expectedFacesPerDocument when it is 0', () => {
+      expect(() =>
+        verifyFontChain({ htmlFiles: [html()], ...baseArgs(), expectedFacesPerDocument: 0 }),
+      ).toThrow(TypeError);
+      expect(() =>
+        verifyFontChain({ htmlFiles: [html()], ...baseArgs(), expectedFacesPerDocument: 0 }),
+      ).toThrow('expectedFacesPerDocument');
+    });
+
+    it('throws a TypeError when expectedFacesPerDocument is -1', () => {
+      expect(() =>
+        verifyFontChain({ htmlFiles: [html()], ...baseArgs(), expectedFacesPerDocument: -1 }),
+      ).toThrow('expectedFacesPerDocument');
+    });
+
+    it('throws a TypeError when expectedFacesPerDocument is NaN', () => {
+      expect(() =>
+        verifyFontChain({
+          htmlFiles: [html()],
+          ...baseArgs(),
+          expectedFacesPerDocument: Number.NaN,
+        }),
+      ).toThrow('expectedFacesPerDocument');
+    });
+
+    it('throws a TypeError when expectedFacesPerDocument is Infinity', () => {
+      expect(() =>
+        verifyFontChain({
+          htmlFiles: [html()],
+          ...baseArgs(),
+          expectedFacesPerDocument: Number.POSITIVE_INFINITY,
+        }),
+      ).toThrow('expectedFacesPerDocument');
+    });
+
+    it('throws a TypeError when expectedFacesPerDocument is 2.5 (non-integer)', () => {
+      expect(() =>
+        verifyFontChain({ htmlFiles: [html()], ...baseArgs(), expectedFacesPerDocument: 2.5 }),
+      ).toThrow('expectedFacesPerDocument');
     });
   });
 });

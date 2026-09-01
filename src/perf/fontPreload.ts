@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { assertResolverReturn, assertStringOption } from './errors.ts';
+import { assertPositiveIntegerOption, assertResolverReturn, assertStringOption } from './errors.ts';
 import { attr, MAX_URL_LENGTH, sanitizeTagText, scanFontFaces } from './scan.ts';
 import { stripComments, stripHtmlComments } from './text.ts';
 
@@ -192,7 +192,16 @@ export interface VerifyFontPreloadOptions {
   /** Floor on DISTINCT face URLs a single document must declare (via its own inline `@font-face`
    * plus every `cssFiles`-declared face) before it is considered to have its own faces at all.
    * Required — see module doc comment for why an optional floor recreates a vacuous "0 of 0"
-   * pass. */
+   * pass. Must be an integer greater than 0 — enforced at runtime by `assertPositiveIntegerOption`
+   * (see `./errors.ts`); a value of `0` does NOT mean "no floor", it throws.
+   *
+   * THIS COUNT IS NOT THE SAME THING `verifyFontChain`'s OPTION OF THE SAME NAME COUNTS, and the
+   * two are NOT interchangeable despite sharing a name and a "floor" framing. Here it counts
+   * RESOLVED face URLs — only the `@font-face` `src:` URLs that `resolveHref` actually located on
+   * disk (via `resolveDistinctFaceUrls`). `verifyFontChain`'s option counts every SYNTACTIC `src:`
+   * string found, with no resolution step. A document with 3 declared faces where one has a
+   * typo'd `src:` reports `count: 2` here and `count: 3` there — pin each gate's floor to what
+   * THAT gate measures, never reuse one number across both. */
   expectedFacesPerDocument: number;
 }
 
@@ -234,7 +243,7 @@ function facesFromCss(css: string, source: string, problems: FontPreloadProblem[
     problems.push({
       kind: 'unreadable-css',
       css: source,
-      detail: `${unterminatedBlocks} @font-face block(s) in "${source}" never close`,
+      detail: `${unterminatedBlocks} @font-face block(s) in "${sanitizeTagText(source)}" never close`,
     });
   }
 
@@ -245,7 +254,7 @@ function facesFromCss(css: string, source: string, problems: FontPreloadProblem[
         kind: 'oversized-url',
         source,
         excerpt: sanitizeTagText(scanned.value),
-        detail: `a url() in "${source}" exceeds ${MAX_URL_LENGTH} characters and was not safely captured`,
+        detail: `a url() in "${sanitizeTagText(source)}" exceeds ${MAX_URL_LENGTH} characters and was not safely captured`,
       });
       continue;
     }
@@ -257,7 +266,7 @@ function facesFromCss(css: string, source: string, problems: FontPreloadProblem[
       problems.push({
         kind: 'face-without-woff2',
         source,
-        detail: `an @font-face in "${source}" declares no .woff2 src, so it cannot be preloaded`,
+        detail: `an @font-face in "${sanitizeTagText(source)}" declares no .woff2 src, so it cannot be preloaded`,
       });
     }
     return [];
@@ -292,7 +301,7 @@ function readHtmlDocs(htmlFiles: string[], problems: FontPreloadProblem[]): Html
       problems.push({
         kind: 'unreadable-html',
         html: file,
-        detail: `could not read "${file}": ${String(error)}`,
+        detail: `could not read "${sanitizeTagText(file)}": ${sanitizeTagText(String(error))}`,
       });
       continue;
     }
@@ -302,7 +311,7 @@ function readHtmlDocs(htmlFiles: string[], problems: FontPreloadProblem[]): Html
       problems.push({
         kind: 'unterminated-html-comment',
         html: file,
-        detail: `"${file}" contains an unterminated HTML comment`,
+        detail: `"${sanitizeTagText(file)}" contains an unterminated HTML comment`,
       });
     }
     docs.push({ file, unblanked, blanked, unterminated });
@@ -322,7 +331,7 @@ function readCssFaces(cssFiles: string[], problems: FontPreloadProblem[]): Decla
       problems.push({
         kind: 'unreadable-css',
         css: file,
-        detail: `could not read "${file}": ${String(error)}`,
+        detail: `could not read "${sanitizeTagText(file)}": ${sanitizeTagText(String(error))}`,
       });
       continue;
     }
@@ -379,7 +388,7 @@ function resolveStylesheetHref(
       kind: 'resolver-threw',
       source: doc.file,
       href,
-      detail: `resolveHref threw while resolving stylesheet "${sanitizeTagText(href)}" linked from "${doc.file}": ${String(error)}`,
+      detail: `resolveHref threw while resolving stylesheet "${sanitizeTagText(href)}" linked from "${sanitizeTagText(doc.file)}": ${sanitizeTagText(String(error))}`,
     });
     return undefined;
   }
@@ -409,7 +418,7 @@ function attributeLinkedCssFaces(
         html: doc.file,
         href,
         detail:
-          `"${doc.file}" links stylesheet "${sanitizeTagText(href)}", resolved to a file not ` +
+          `"${sanitizeTagText(doc.file)}" links stylesheet "${sanitizeTagText(href)}", resolved to a file not ` +
           'present in cssFiles — this gate cannot verify faces it may declare; add it to ' +
           'cssFiles, or confirm it declares no @font-face',
       });
@@ -447,7 +456,7 @@ function resolveDistinctFaceUrls(
         kind: 'resolver-threw',
         source,
         href,
-        detail: `resolveHref threw while resolving "${sanitizeTagText(href)}": ${String(error)}`,
+        detail: `resolveHref threw while resolving "${sanitizeTagText(href)}": ${sanitizeTagText(String(error))}`,
       });
       continue;
     }
@@ -457,7 +466,7 @@ function resolveDistinctFaceUrls(
         kind: 'unresolvable-font-file',
         source,
         href,
-        detail: `font face url "${sanitizeTagText(href)}" declared in "${source}" did not resolve to a file`,
+        detail: `font face url "${sanitizeTagText(href)}" declared in "${sanitizeTagText(source)}" did not resolve to a file`,
       });
       continue;
     }
@@ -524,7 +533,7 @@ function reportUnusablePreload(
       html: htmlFile,
       href: tag.href,
       crossorigin: tag.crossorigin,
-      detail: `"${htmlFile}" preloads "${sanitizeTagText(tag.href)}" with crossorigin ${
+      detail: `"${sanitizeTagText(htmlFile)}" preloads "${sanitizeTagText(tag.href)}" with crossorigin ${
         tag.crossorigin === undefined ? '(absent)' : sanitizeTagText(tag.crossorigin)
       }, not anonymous — a different fetch cache key than the @font-face request, so the file downloads twice`,
     });
@@ -535,7 +544,7 @@ function reportUnusablePreload(
       html: htmlFile,
       href: tag.href,
       type: tag.type,
-      detail: `"${htmlFile}" preloads "${sanitizeTagText(tag.href)}" with type ${
+      detail: `"${sanitizeTagText(htmlFile)}" preloads "${sanitizeTagText(tag.href)}" with type ${
         tag.type === undefined ? '(absent)' : sanitizeTagText(tag.type)
       }, not font/woff2 — the browser may skip the preload`,
     });
@@ -559,7 +568,7 @@ function checkPreloadPairing(
         kind: 'font-preload-missing',
         html: htmlFile,
         href,
-        detail: `"${htmlFile}" declares @font-face src "${sanitizeTagText(href)}" with no matching preload`,
+        detail: `"${sanitizeTagText(htmlFile)}" declares @font-face src "${sanitizeTagText(href)}" with no matching preload`,
       });
       continue;
     }
@@ -573,7 +582,7 @@ function checkPreloadPairing(
         html: htmlFile,
         href,
         count: matches.length,
-        detail: `"${htmlFile}" preloads "${sanitizeTagText(href)}", which no @font-face declares (${matches.length} tag(s))`,
+        detail: `"${sanitizeTagText(htmlFile)}" preloads "${sanitizeTagText(href)}", which no @font-face declares (${matches.length} tag(s))`,
       });
     }
     if (matches.length > 1) {
@@ -582,7 +591,7 @@ function checkPreloadPairing(
         html: htmlFile,
         href,
         count: matches.length,
-        detail: `"${htmlFile}" has ${matches.length} preload tags for the same href "${sanitizeTagText(href)}"`,
+        detail: `"${sanitizeTagText(htmlFile)}" has ${matches.length} preload tags for the same href "${sanitizeTagText(href)}"`,
       });
     }
   }
@@ -612,7 +621,7 @@ function checkDocument(
       html: doc.file,
       count: documentFaceUrls.size,
       expected: expectedFacesPerDocument,
-      detail: `"${doc.file}" declares ${documentFaceUrls.size} distinct font face url(s), expected at least ${expectedFacesPerDocument}`,
+      detail: `"${sanitizeTagText(doc.file)}" declares ${documentFaceUrls.size} distinct font face url(s), expected at least ${expectedFacesPerDocument}`,
     });
   }
 
@@ -621,6 +630,7 @@ function checkDocument(
 
 export function verifyFontPreload(options: VerifyFontPreloadOptions): VerifyFontPreloadResult {
   const { htmlFiles, cssFiles, resolveHref, expectedFacesPerDocument } = options;
+  assertPositiveIntegerOption(expectedFacesPerDocument, 'expectedFacesPerDocument');
   const problems: FontPreloadProblem[] = [];
 
   if (htmlFiles.length === 0) {
