@@ -339,6 +339,15 @@ describe('verifyNoFontImport', () => {
       ]);
     });
 
+    // Explicit, generous timeout: this test does genuine bulk filesystem I/O (writes + reads
+    // 20,000 real files through the consumer-shaped `resolveImport` path — a synthetic in-memory
+    // resolver would not exercise the same code path). Vitest's default 5000ms is a general-
+    // purpose default, not sized for that; on a GitHub Actions runner this took ~11s while
+    // passing locally, which is exactly the flaky (not deterministic) failure this timeout fixes.
+    // A global `testTimeout` bump was deliberately rejected — it would mask a genuinely hung test
+    // anywhere else in the suite. Depth stays at 20,000 (6.67x the N=3000 point where the old
+    // recursive implementation reliably blew the call stack) so a regression to recursion is
+    // still caught.
     it('a deep ACYCLIC chain of 20,000 files completes without throwing (no font anywhere)', () => {
       const depth = 20_000;
       const fileFor = (i: number): string => join(root, `deep-clean-${i}.css`);
@@ -361,8 +370,13 @@ describe('verifyNoFontImport', () => {
       }).not.toThrow();
 
       expect(result).toEqual({ ok: true, problems: [] });
-    });
+    }, 45_000);
 
+    // Explicit, generous timeout: same rationale as the previous test — 20,000 real files of
+    // bulk filesystem I/O, flaky against the 5000ms default on a GitHub Actions runner while
+    // green locally and in the release workflow's own `npm test` run on the same commit. Depth
+    // stays at 20,000 (6.67x the N=3000 point where the old recursive implementation reliably
+    // blew the call stack) so a regression to recursion is still caught.
     it('a deep ACYCLIC chain of 20,000 files ending in @font-face reports font-import with the full chain', () => {
       const depth = 20_000;
       const fileFor = (i: number): string => join(root, `deep-font-${i}.css`);
@@ -393,7 +407,7 @@ describe('verifyNoFontImport', () => {
         expect(problem.chain[0]).toBe('./deep-font-1.css');
         expect(problem.chain[problem.chain.length - 1]).toBe(`./deep-font-${depth - 1}.css`);
       }
-    });
+    }, 45_000);
 
     it('an import cycle still terminates and still reports correctly (regression guard, iterative walk)', () => {
       const fonts = write(
