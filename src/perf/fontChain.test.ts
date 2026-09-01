@@ -1275,4 +1275,82 @@ describe('verifyFontChain', () => {
       if ('entry' in p) paths.add(p.subject);
     }
   });
+
+  // --- text.ts merge (2026-09-01): stripComments is now string-aware, so a CSS string literal
+  // containing "/*" can no longer let an unrelated later "*/" delete a real @font-face block sitting
+  // between them. See src/perf/text.test.ts's "stripComments (CSS) — string-awareness" suite for the
+  // direct unit tests; this proves the change actually alters this gate's own verdict, not just the
+  // stripper's isolated output.
+  it('MERGE: a /* inside a CSS string literal no longer lets an unrelated trailing */ hide a @font-face from deep-font detection', () => {
+    const entry = write(
+      'string-literal.css',
+      '.a { content: "/* not a comment"; }\n' +
+        "@font-face { font-family: 'X'; src: url('/hidden.woff2'); }\n" +
+        '/* trailing comment */',
+    );
+    const html = htmlWithStylesheet('string-literal.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'deep-font');
+    expect(problem).toBeDefined();
+    expect(problem?.fontUrl).toBe('/hidden.woff2');
+  });
+
+  // --- T2 (scan.ts extraction): a URL over scan.ts's MAX_URL_LENGTH is its own explicit problem,
+  // never a silent pass and never misreported as "no font found" -----------------------------
+
+  it('reports oversized-url, not a silent pass, for a font src: url() over MAX_URL_LENGTH', () => {
+    const overLong = 'a'.repeat(2049);
+    const entry = write(
+      'oversized-font-url.css',
+      `@font-face { font-family: 'X'; src: url(${overLong}); }`,
+    );
+    const html = htmlWithStylesheet('index-oversized-font-url.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'oversized-url');
+    expect(problem).toBeDefined();
+    expect(problem?.document).toBe(html);
+    expect(problem?.stylesheet).toBe(entry);
+    // Anti-vacuity: this must NOT be reported as a clean pass (no deep-font, no font found at
+    // all) — the over-long URL is a problem in its own right, distinct from "no font here".
+    expect(result.problems.some((p) => p.kind === 'deep-font')).toBe(false);
+  });
+
+  it('reports oversized-url for an @import specifier over MAX_URL_LENGTH, and does not attempt to resolve it', () => {
+    const overLongSpecifier = 'a'.repeat(2049);
+    const entry = write('oversized-import.css', `@import "${overLongSpecifier}";`);
+    const html = htmlWithStylesheet('index-oversized-import.html');
+    let resolveImportCalled = false;
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: () => {
+        resolveImportCalled = true;
+        return undefined;
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'oversized-url');
+    expect(problem).toBeDefined();
+    expect(problem?.document).toBe(html);
+    // The oversized specifier is diagnostic-only — it must never reach resolveImport, since it is
+    // known not to be the real specifier (that is exactly what could not be captured).
+    expect(resolveImportCalled).toBe(false);
+    expect(result.problems.some((p) => p.kind === 'unresolvable-import')).toBe(false);
+  });
 });

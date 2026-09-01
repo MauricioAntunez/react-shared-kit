@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { brotliCompressSync } from 'node:zlib';
 import { assertResolverReturn, assertStringOption } from './errors.ts';
+import { attr } from './scan.ts';
 
 /**
  * Render-blocking CSS byte budget per built document (T3, plan 2026-08-30-deploy-perf-gates).
@@ -33,12 +34,6 @@ import { assertResolverReturn, assertStringOption } from './errors.ts';
  * page — flagging it would fire on every fragment or stylesheet-free route a consumer legitimately
  * ships, which `empty-input` at the batch level does not.
  */
-
-/** Reads one attribute's raw string value off a tag's source text. */
-function attr(tag: string, name: string): string | undefined {
-  const match = new RegExp(`\\s${name}\\s*=\\s*"([^"]*)"`, 'i').exec(tag);
-  return match?.[1];
-}
 
 /** HTML boolean attributes are present-or-absent, not value-driven (`disabled`, `disabled=""`,
  * `disabled="disabled"` are all "present"). */

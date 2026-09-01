@@ -94,6 +94,13 @@
  */
 import { readFileSync } from 'node:fs';
 import { assertResolverReturn, assertStringOption } from './errors.ts';
+import {
+  attr,
+  extractImportSpecifiers,
+  MAX_URL_LENGTH,
+  sanitizeTagText,
+  scanFontFaces,
+} from './scan.ts';
 import { stripComments, stripHtmlComments } from './text.ts';
 
 export type FontChainProblemKind =
@@ -106,6 +113,7 @@ export type FontChainProblemKind =
   | 'unresolvable-import'
   | 'resolver-error'
   | 'unparseable-font-face'
+  | 'oversized-url'
   | 'deep-font';
 
 /**
@@ -143,6 +151,7 @@ export type FontChainProblemKind =
  *     unparseable-font-face     -> stylesheet: string
  *     unresolvable-import       -> specifier: string
  *     resolver-error            -> specifier: string
+ *     oversized-url             -> excerpt: string
  *     deep-font                 -> fontUrl: string
  *
  * A consumer can no longer write code that treats two of these as interchangeable without an
@@ -154,9 +163,9 @@ export type FontChainProblemKind =
  *     `unterminated-html-comment`, `malformed-stylesheet-link`, `unresolvable-stylesheet`) — no
  *     `entry`, no `chain`, because neither concept applies before a stylesheet is resolved.
  *   - A resolved stylesheet WAS walked (`unreadable-stylesheet`, `unresolvable-import`,
- *     `resolver-error`, `unparseable-font-face`, `deep-font`) — `entry` and `chain` both exist and
- *     are never empty; `chain` always includes at least the entry (`chain[0]`), even when the
- *     defect is the entry sheet itself.
+ *     `resolver-error`, `unparseable-font-face`, `oversized-url`, `deep-font`) — `entry` and
+ *     `chain` both exist and are never empty; `chain` always includes at least the entry
+ *     (`chain[0]`), even when the defect is the entry sheet itself.
  * A consumer narrows with `problem.kind === 'deep-font'` (etc.) exactly as it would any
  * discriminated union.
  */
@@ -253,6 +262,20 @@ export type FontChainProblem =
       message: string;
     }
   | {
+      kind: 'oversized-url';
+      document: string;
+      entry: string;
+      /** The RESOLVED stylesheet path holding the offending `url()`/`@import` — same convention
+       * as `unparseable-font-face.stylesheet`. */
+      stylesheet: string;
+      /** A `sanitizeTagText`-capped excerpt of the raw text at the offending position — NEVER the
+       * full value (that is exactly what exceeded `MAX_URL_LENGTH` and could not be captured in
+       * full). Diagnostic only; do not treat it as the real URL/specifier. */
+      excerpt: string;
+      chain: string[];
+      message: string;
+    }
+  | {
       kind: 'deep-font';
       document: string;
       entry: string;
@@ -325,98 +348,6 @@ const REMEDY =
  */
 export const internal = { stripComments, stripHtmlComments };
 
-/** One `@import` specifier, unwrapped from `url(...)` and quotes either way it can be written. */
-function extractImportSpecifiers(css: string): string[] {
-  const specifiers: string[] = [];
-  const importRe = /@import\s+(?:url\(\s*(['"]?)([^'")]+)\1\s*\)|(['"])([^'"]+)\3)/g;
-  for (const match of css.matchAll(importRe)) {
-    const specifier = match[2] ?? match[4];
-    if (specifier !== undefined) specifiers.push(specifier);
-  }
-  return specifiers;
-}
-
-/** Every `url(...)` inside one `src:` declaration's value (the part before the trailing `;`). */
-function urlsInSrcDeclaration(declarationValue: string): string[] {
-  const urls: string[] = [];
-  for (const urlMatch of declarationValue.matchAll(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g)) {
-    const url = urlMatch[2];
-    if (url !== undefined) urls.push(url);
-  }
-  return urls;
-}
-
-/** Every `url(...)` inside every `src:` descriptor found in one `@font-face { ... }` block body.
- *
- * The trailing `;` is OPTIONAL (`src\s*:\s*([^;]+);?`) — CSS itself makes the semicolon after a
- * block's LAST declaration optional, and every minifier omits it, so a real production
- * stylesheet's final `src:` ends `...url(...)format("woff2")}` with no `;` before the `}`.
- * Matching only when a `;` follows used to score that shape as zero urls, silently blinding this
- * gate on minified CSS (fontchain plan `fontchain-minified-src.md`, K2). `[^;]+` still stops at
- * the next `;` when one is present, so a `src:` followed by another declaration is unaffected.
- *
- * Known limit, unchanged by the above: `url(data:font/woff2;base64,...)` has a `;` INSIDE the
- * value, so `[^;]+` truncates at it. This is benign for this gate's purpose — a data-URI face is
- * inlined in the stylesheet itself, so it is never "discovered late" and cannot be a `deep-font`.
- * Not closed here; a `url()`-aware split is a larger rewrite this fix does not authorise. */
-function urlsInFontFaceBody(body: string): string[] {
-  const urls: string[] = [];
-  for (const srcMatch of body.matchAll(/src\s*:\s*([^;]+);?/g)) {
-    urls.push(...urlsInSrcDeclaration(srcMatch[1] ?? ''));
-  }
-  return urls;
-}
-
-interface FontFaceScanResult {
-  /** Every font `src` URL found in a properly closed `@font-face { ... }` block. */
-  urls: string[];
-  /** Count of `@font-face {` starts with no matching `}` before end of file. */
-  unterminatedBlocks: number;
-}
-
-/**
- * Every `url(...)` inside every `src:` descriptor of every `@font-face { ... }` block in `css`,
- * plus a count of blocks whose opening brace never closes. Brace-matched rather than
- * regex-spanned across the whole file, so a `@font-face` block does not accidentally swallow
- * unrelated rules that follow it. Shared between external-stylesheet scanning and inline
- * `<style>` scanning (see `extractInlineFontFaceUrls`) — the block grammar is identical either
- * way; only how a truncated block is reported differs at the call site.
- */
-function scanFontFaces(css: string): FontFaceScanResult {
-  const urls: string[] = [];
-  let unterminatedBlocks = 0;
-  const blockStartRe = /@font-face\s*\{/g;
-  for (const start of css.matchAll(blockStartRe)) {
-    const bodyStart = (start.index ?? 0) + start[0].length;
-    const end = css.indexOf('}', bodyStart);
-    if (end === -1) {
-      // FAIL CLOSED: a truncated block is a stronger signal something is wrong with the build
-      // artifact than a reason to say nothing about it (PR #4 review finding).
-      unterminatedBlocks += 1;
-      continue;
-    }
-    urls.push(...urlsInFontFaceBody(css.slice(bodyStart, end)));
-  }
-  return { urls, unterminatedBlocks };
-}
-
-/** Reads one attribute's raw string value off a tag's source text. Duplicated minimally from
- * `cssBudget.ts`'s identical helper (that module is out of scope for this fix, and the shared
- * shape is small enough that a second copy is cheaper than a cross-cutting helper module for one
- * function each — same reasoning `cssBudget.ts` already gives for its own copy).
- *
- * Matches double- OR single-quoted attribute values (IMPORTANT 5) — the same precedent
- * `HTML_CLASS_ATTR` in `danglingClasses.ts` already sets. Before this fix, a double-quote-only
- * match skipped `<link rel='preload' as='font' crossorigin href='...'>` (valid HTML5) entirely,
- * producing a false `deep-font` on a page that had already applied the recommended fix. Unquoted
- * attribute values (`rel=stylesheet`) are OUT OF SCOPE: real build output always quotes attribute
- * values, and an unquoted value ends at the next whitespace, which this single-tag regex has no
- * reliable way to distinguish from the start of an unrelated following attribute. */
-function attr(tag: string, name: string): string | undefined {
-  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(tag);
-  return match?.[1] ?? match?.[2];
-}
-
 /** `<link rel="preload" as="font" crossorigin href="...">` URLs in `html`. All three of `rel`,
  * `as` and `crossorigin` are required.
  *
@@ -450,40 +381,6 @@ function extractPreloadFontUrls(html: string): Set<string> {
     if (href !== undefined) urls.add(href);
   }
   return urls;
-}
-
-/** Maximum length of a raw `<link ...>` tag reported in `malformed-stylesheet-link.tag` (round-2
- * review MEDIUM #7). `/<link\s[^>]*>/gi`'s `[^>]*` is unbounded — a build artifact with no closing
- * `>` for a very long run makes the "one tag" match span megabytes, and that full raw text is
- * placed verbatim into `message`/`tag` for a consumer to read. This is FILE CONTENT, the
- * LESS-TRUSTED side of this package's own trust boundary (see `./errors.ts`'s reasoning for why
- * `hashPattern`/`allowlist` are trusted but build content is not) — same reasoning already applied
- * to `oversized-filename` (`headers.ts`) and `oversized-class-name` (`danglingClasses.ts`). 300 is
- * generous for any real `<link>` tag (attribute values in real build output are short paths/URLs)
- * while still bounding a pathological one. */
-const MAX_MALFORMED_TAG_LENGTH = 300;
-
-/** Collapses ASCII control characters (including newlines/carriage returns) in `tag` to a visible
- * escape sequence, then caps the result to `MAX_MALFORMED_TAG_LENGTH` (round-2 review MEDIUM #7).
- *
- * WHY: `tag` is placed verbatim into `message` (`"<html> has a <link rel="stylesheet"> with no
- * usable href (${tag}) — ..."`), and this package's own README suggests a consumer prints one
- * problem per line. An embedded `\n` in a malformed tag would let a single build-content string
- * forge extra "lines" into that output — a log-forging surface, reproduced with a tag containing
- * an embedded newline landing byte-for-byte in a printed message. Escaping every control character
- * (not just `\n`) closes the whole class, not just the one reproduced instance. Length is capped
- * SEPARATELY, after escaping, so a very long but otherwise ordinary tag still gets a bounded
- * message rather than embedding megabytes of raw HTML in a problem object. */
-function sanitizeTagText(tag: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control characters (including newline) to escape them — that IS the sanitization this function exists to perform.
-  const escaped = tag.replace(/[\x00-\x1f\x7f]/g, (ch) => {
-    if (ch === '\n') return '\\n';
-    if (ch === '\r') return '\\r';
-    if (ch === '\t') return '\\t';
-    return `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`;
-  });
-  if (escaped.length <= MAX_MALFORMED_TAG_LENGTH) return escaped;
-  return `${escaped.slice(0, MAX_MALFORMED_TAG_LENGTH)}… [truncated, ${escaped.length} chars]`;
 }
 
 interface StylesheetLinkScanResult {
@@ -527,12 +424,21 @@ function extractStylesheetHrefs(html: string): StylesheetLinkScanResult {
  * shapes that exempt a font from `deep-font` (see module doc comment). A truncated `@font-face`
  * inside an inline block is not separately reported: this function only feeds the exemption set,
  * so a malformed inline block simply fails to exempt anything, which is already the fail-closed
- * outcome (see module doc comment). */
+ * outcome (see module doc comment).
+ *
+ * An OVERSIZED inline font URL (`scan.ts`'s `MAX_URL_LENGTH`) is likewise never added to the
+ * exemption set — its `value` is only a diagnostic excerpt, not the real URL, so it cannot be
+ * matched against anything. This does not create a vacuous pass: this function's output is used
+ * ONLY to exempt a matching URL found elsewhere in the CSS graph, never to report a finding about
+ * the inline URL itself, so declining to exempt is the fail-closed direction — the worst case is a
+ * font that fails to be exempted, not one that wrongly passes. */
 function extractInlineFontFaceUrls(html: string): Set<string> {
   const urls = new Set<string>();
   for (const styleMatch of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
     const { urls: fontUrls } = scanFontFaces(stripComments(styleMatch[1] ?? ''));
-    for (const url of fontUrls) urls.add(url);
+    for (const url of fontUrls) {
+      if (!url.oversized) urls.add(url.value);
+    }
   }
   return urls;
 }
@@ -652,6 +558,35 @@ interface QueueItem {
   chain: string[];
 }
 
+/** Reports a `url()`/`@import` value whose content exceeded `MAX_URL_LENGTH` (or had no closing
+ * delimiter within a bounded scan window — see `scan.ts`'s module doc comment) as its own explicit
+ * problem, never a silently dropped match. `excerpt` is a `sanitizeTagText`-capped slice of the
+ * raw text at the offending position — it is NOT the real, complete value (that is precisely what
+ * could not be safely captured) and must never be treated as one. Naively bounding the underlying
+ * regex quantifier without this explicit report would make the finding vanish silently instead of
+ * being fixed — see `scan.ts`'s `MAX_URL_LENGTH` doc comment for the full reasoning. */
+function reportOversizedUrl(
+  state: WalkState,
+  excerpt: string,
+  stylesheet: string,
+  chain: string[],
+  contextLabel: string,
+): void {
+  state.problems.push({
+    kind: 'oversized-url',
+    document: state.document,
+    entry: state.entryLabel,
+    stylesheet,
+    excerpt,
+    chain,
+    message:
+      `${contextLabel} in "${stylesheet}" (chain: ${chain.join(' -> ')}) exceeds ` +
+      `${MAX_URL_LENGTH} characters, or has no closing delimiter nearby, and could not be safely ` +
+      'scanned. Reported explicitly rather than silently skipped — a font hidden behind an ' +
+      `over-long URL must never vanish from this gate with no trace. Excerpt: "${excerpt}"`,
+  });
+}
+
 /** Reports every `@font-face` src found in `css` at `depth`, UNLESS it is in `state.exemptUrls`
  * (preloaded with `crossorigin`, or declared inline in the document — see module doc comment).
  * There is no depth threshold: every CSS-graph depth is >= 1 (a document hop, at minimum), and
@@ -693,12 +628,16 @@ function reportFontFaces(
   }
 
   for (const url of urls) {
-    if (state.exemptUrls.has(url)) continue;
+    if (url.oversized) {
+      reportOversizedUrl(state, url.value, path, chain, 'A font src: url()');
+      continue;
+    }
+    if (state.exemptUrls.has(url.value)) continue;
     state.problems.push({
       kind: 'deep-font',
       document: state.document,
       entry: state.entryLabel,
-      fontUrl: url,
+      fontUrl: url.value,
       chain,
       message:
         `${REMEDY} This URL is reachable only after ${depth} stylesheet hop(s) from the ` +
@@ -716,6 +655,32 @@ function reportFontFaces(
  * `@import` graph — a node already enqueued is never enqueued again, so the queue is bounded by
  * the number of distinct files in the graph.
  */
+/** Resolves every `@import` specifier found in `css` (the stylesheet at `path`, `depth` hops from
+ * the document) and enqueues each newly-reached file onto `queue` — split out of `walk` purely to
+ * keep that function's cognitive complexity within this package's Biome budget; no behaviour
+ * changed by the split. An oversized specifier is reported via `reportOversizedUrl` and never
+ * queued — there is no resolved path to walk into once the specifier could not be captured. */
+function enqueueImports(
+  state: WalkState,
+  css: string,
+  path: string,
+  depth: number,
+  chain: string[],
+  queue: QueueItem[],
+): void {
+  for (const specifier of extractImportSpecifiers(css)) {
+    const nextChain = [...chain, specifier.value];
+    if (specifier.oversized) {
+      reportOversizedUrl(state, specifier.value, path, nextChain, 'An @import specifier');
+      continue;
+    }
+    const resolved = safeResolveImport(state, specifier.value, nextChain);
+    if (resolved === undefined || state.visited.has(resolved)) continue;
+    state.visited.add(resolved);
+    queue.push({ path: resolved, depth: depth + 1, chain: nextChain });
+  }
+}
+
 function walk(state: WalkState, entryPath: string): void {
   const queue: QueueItem[] = [{ path: entryPath, depth: 1, chain: [entryPath] }];
   state.visited.add(entryPath);
@@ -726,14 +691,7 @@ function walk(state: WalkState, entryPath: string): void {
     const css = readStylesheet(state, path, chain);
     if (css !== undefined) {
       reportFontFaces(state, css, path, depth, chain);
-
-      for (const specifier of extractImportSpecifiers(css)) {
-        const nextChain = [...chain, specifier];
-        const resolved = safeResolveImport(state, specifier, nextChain);
-        if (resolved === undefined || state.visited.has(resolved)) continue;
-        state.visited.add(resolved);
-        queue.push({ path: resolved, depth: depth + 1, chain: nextChain });
-      }
+      enqueueImports(state, css, path, depth, chain, queue);
     }
     item = queue.shift();
   }

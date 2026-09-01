@@ -387,4 +387,21 @@ describe('verifyCssBudget', () => {
       expect.objectContaining({ kind: 'unreadable-file', file: root }),
     ]);
   });
+
+  // --- T2 (scan.ts extraction): attr() now comes from the shared ./scan.ts helper, which accepts
+  // single-quoted attribute values too — a strict superset of this module's prior double-quote-only
+  // behaviour (see scan.ts's attr() doc comment). Pinning it here so a future edit to scan.ts's
+  // attr() cannot silently regress this consumer.
+
+  it('reads single-quoted <link> attributes via the shared scan.ts attr() helper', () => {
+    write('main.css', 'x'.repeat(100));
+    const html = write(
+      'index-single-quoted.html',
+      "<html><head><link rel='stylesheet' href='/main.css'></head></html>",
+    );
+
+    const result = verifyCssBudget({ htmlFiles: [html], resolveHref, maxBytes: 1_000_000 });
+
+    expect(result).toEqual({ ok: true, problems: [] });
+  });
 });

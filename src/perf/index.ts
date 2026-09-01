@@ -83,6 +83,13 @@
  * re-exported here — because no consumer needs it; `verifyCssBudget` and `verifyHeaders` have no
  * comment-stripping step of their own to share.
  *
+ * TWO FONT-DELIVERY ARCHITECTURES EXIST, and `verifyFontAssets`/`verifyFontPreload` cover them
+ * separately, not interchangeably. `verifyFontAssets` targets self-hosted static fonts (a
+ * dedicated font directory, stable literal URLs); `verifyFontPreload` targets bundler-hashed
+ * fonts (npm font packages content-hashed into a shared assets dir, no stable URL to pin). See
+ * `fontAssets.ts`'s module doc comment for the full reasoning and the failure mode of running the
+ * wrong one.
+ *
  * `verifyFontChain` measures font discovery PER DOCUMENT, not from a build-wide union: each
  * `htmlFiles` entry's own `<link rel="stylesheet">` tags (resolved via `resolveStylesheet`) name
  * the CSS graph walked for THAT document, and only that document's own preload/inline-`@font-face`
@@ -119,12 +126,43 @@ export type {
 } from './danglingClasses.ts';
 export { findDanglingClasses } from './danglingClasses.ts';
 export type {
+  FontAssetsProblem,
+  FontAssetsProblemKind,
+  FontAssetsWarning,
+  FontAssetsWarningKind,
+  VerifyFontAssetsOptions,
+  VerifyFontAssetsResult,
+} from './fontAssets.ts';
+export { fontUrlsFromCss, verifyFontAssets } from './fontAssets.ts';
+export type {
   FontChainProblem,
   FontChainProblemKind,
   VerifyFontChainOptions,
   VerifyFontChainResult,
 } from './fontChain.ts';
 export { verifyFontChain } from './fontChain.ts';
+export type {
+  NoFontImportProblem,
+  NoFontImportProblemKind,
+  VerifyNoFontImportOptions,
+  VerifyNoFontImportResult,
+} from './fontImport.ts';
+export { verifyNoFontImport } from './fontImport.ts';
+export type {
+  FontPreloadProblem,
+  FontPreloadProblemKind,
+  VerifyFontPreloadOptions,
+  VerifyFontPreloadResult,
+} from './fontPreload.ts';
+export { verifyFontPreload } from './fontPreload.ts';
+export type { FontUsageViolation, ObservedElement, ShippedFace } from './fontUsage.ts';
+export {
+  findUnshippedFontUsage,
+  normalizeFamily,
+  parseFontFaces,
+  shipsFamily,
+  shipsWeight,
+} from './fontUsage.ts';
 export type {
   HeadersProblem,
   HeadersProblemKind,
