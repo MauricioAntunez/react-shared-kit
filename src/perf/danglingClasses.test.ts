@@ -469,4 +469,25 @@ describe('findDanglingClasses', () => {
 
     expect(result.problems.some((p) => p.kind === 'unmatched-allowlist-file')).toBe(false);
   });
+
+  // --- text.ts merge (2026-09-01): stripHtmlComments now blanks <script>/<style> bodies before
+  // scanning, so a class-attribute-shaped string literal embedded in a <script> can no longer feed
+  // htmlClasses as if it were a real element. See src/perf/text.test.ts's "raw-text blanking" suite
+  // for the direct unit tests; this proves the change actually alters this gate's own verdict.
+  it('MERGE: a <script>-embedded class-attribute-shaped string literal no longer counts as a real element, so the class still reports dangling', () => {
+    writeFileSync(cssFile, '._hiwViz_18mh8_533 { width: 100%; }');
+    writeFileSync(
+      htmlFile,
+      '<script>var s = \'<div class="_hiwViz_18mh8_533">hi</div>\';</script>',
+    );
+
+    const result = findDanglingClasses({ htmlFiles: [htmlFile], cssFiles: [cssFile] });
+
+    expect(result.ok).toBe(false);
+    expect(
+      result.problems.some(
+        (p) => p.kind === 'dangling-class' && p.className === '_hiwViz_18mh8_533',
+      ),
+    ).toBe(true);
+  });
 });

@@ -159,6 +159,133 @@ describe('stripHtmlComments', () => {
   });
 });
 
+/**
+ * Merge tests (2026-09-01): `stripComments`/`stripHtmlComments` were hardened by merging in a
+ * char-walked implementation from boufin's `verify-font-preload.ts` — string-aware CSS scanning,
+ * quote-aware in-tag HTML scanning, and `<script>`/`<style>` raw-text blanking. See text.ts's
+ * module and function doc comments for the full mechanism and provenance of each behaviour below.
+ */
+
+describe('stripComments (CSS) — string-awareness (merge)', () => {
+  it('does not treat /* inside a quoted CSS string as a comment opener, so a following @font-face survives', () => {
+    const css =
+      '.a { content: "/* not a comment"; } ' +
+      "@font-face { font-family: 'X'; src: url('/x.woff2'); }";
+    const out = stripComments(css);
+    expect(out).toContain('@font-face');
+    expect(out).toContain('/x.woff2');
+  });
+
+  it('a later unrelated */ does not get treated as closing a /* that only ever appeared inside a string literal', () => {
+    // Old plain-regex behaviour: `/\/\*[\s\S]*?\*\//g` has no notion of "inside a string" — it
+    // would open at the string's /*, then lazily close at this file's next *real* */, deleting the
+    // whole @font-face block sitting between them. String-awareness must stop that.
+    const css =
+      '.a { content: "/* fake"; } ' +
+      "@font-face { src: url('/x.woff2'); } " +
+      '/* real comment */ .b { color: red; }';
+    const out = stripComments(css);
+    expect(out).toContain('@font-face');
+    expect(out).toContain('/x.woff2');
+    expect(out).not.toContain('real comment');
+    expect(out).toContain('.b');
+  });
+
+  it('strips an unterminated /* comment to end of file (behaviour change: previously left in place)', () => {
+    const css = ".a { color: red; } /* unterminated comment @font-face { src: url('/x.woff2'); }";
+    expect(stripComments(css)).toBe('.a { color: red; } ');
+  });
+});
+
+describe('stripHtmlComments — <script>/<style> raw-text blanking (merge)', () => {
+  it('does not let a <!-- inside a <script> body swallow a real preload link that follows the script', () => {
+    const html =
+      '<script>var x = "<!--"; console.log("-->");</script>' +
+      '<link rel="preload" as="font" href="/f.woff2">';
+    const result = stripHtmlComments(html);
+    expect(result.unterminated).toBe(false);
+    expect(result.text).toContain('<link rel="preload" as="font" href="/f.woff2">');
+  });
+
+  it('blanks a <link>-shaped string literal inside a <script> body while keeping the script tags', () => {
+    const html =
+      '<script>var s = "<link rel=\\"preload\\" as=\\"font\\" href=\\"/fake.woff2\\">";</script>';
+    const { text } = stripHtmlComments(html);
+    expect(text).toContain('<script>');
+    expect(text).toContain('</script>');
+    expect(text).not.toContain('/fake.woff2');
+  });
+
+  it('blanks a <link>-shaped string literal inside a <style> body while keeping the style tags, when blankStyleBodies is true', () => {
+    // <style> only blanks when the caller opts in — see the `blankStyleBodies` doc comment on
+    // stripHtmlComments for why the default must stay false (fontChain.ts needs the opposite view).
+    const html = '<style>/* content: "<link rel=preload as=font href=/fake2.woff2>"; */</style>';
+    const { text } = stripHtmlComments(html, { blankStyleBodies: true });
+    expect(text).toContain('<style>');
+    expect(text).toContain('</style>');
+    expect(text).not.toContain('/fake2.woff2');
+  });
+
+  it('recognises <SCRIPT> and <Style> case-insensitively as raw-text elements', () => {
+    const html =
+      '<SCRIPT>var link = "<link rel=preload as=font href=/case.woff2>";</SCRIPT>' +
+      '<Style>content: "<link rel=preload as=font href=/case2.woff2>";</Style>';
+    const { text } = stripHtmlComments(html, { blankStyleBodies: true });
+    expect(text).not.toContain('/case.woff2');
+    expect(text).not.toContain('/case2.woff2');
+    expect(text).toContain('<SCRIPT>');
+    expect(text).toContain('</SCRIPT>');
+  });
+
+  it('DEFAULT (no options) leaves a real @font-face inside an inline <style> body intact — regression guard for the fontChain.ts inline-style exemption', () => {
+    // This is the exact defect the coordinator's brief originally caused and then corrected:
+    // fontChain.ts's extractInlineFontFaceUrls reads REAL CSS out of stripHtmlComments's output,
+    // so the default must never blank <style> bodies.
+    const html = '<style>@font-face { font-family: X; src: url("/x.woff2"); }</style>';
+    const { text } = stripHtmlComments(html);
+    expect(text).toContain('@font-face');
+    expect(text).toContain('/x.woff2');
+  });
+
+  it('<script> bodies are blanked even when blankStyleBodies is explicitly false, proving the two are independently controlled', () => {
+    const html =
+      '<script>var s = "<link rel=preload as=font href=/scriptfalse.woff2>";</script>' +
+      '<style>@font-face { font-family: X; src: url("/stylefalse.woff2"); }</style>';
+    const { text } = stripHtmlComments(html, { blankStyleBodies: false });
+    expect(text).not.toContain('/scriptfalse.woff2');
+    expect(text).toContain('/stylefalse.woff2');
+  });
+
+  it('consumes an unclosed <script> to end of document', () => {
+    const html =
+      '<script>var x = "<!--"; document.write("<link rel=preload as=font href=/never.woff2>");';
+    const { text, unterminated } = stripHtmlComments(html);
+    // No genuine unterminated HTML comment is involved here — the <!-- lives inside the (blanked)
+    // script body, never reaches the comment scanner, so `unterminated` reports on comments only.
+    expect(unterminated).toBe(false);
+    expect(text).not.toContain('/never.woff2');
+    expect(text).toContain('<script>');
+  });
+});
+
+describe('stripHtmlComments — quote-aware in-tag scanning (merge)', () => {
+  it('does not open a comment for <!-- inside a quoted attribute value', () => {
+    const html = '<div data-x="<!--">text</div>';
+    const result = stripHtmlComments(html);
+    expect(result.unterminated).toBe(false);
+    expect(result.text).toBe('<div data-x="<!--">text</div>');
+  });
+});
+
+describe('stripHtmlComments — genuine comment removal still works (motivating case, merge)', () => {
+  it('removes a genuinely commented-out <link rel="preload"> tag', () => {
+    const html = '<!-- <link rel="preload" as="font" href="/f.woff2"> --><body>hi</body>';
+    const { text } = stripHtmlComments(html);
+    expect(text).not.toContain('/f.woff2');
+    expect(text).toContain('<body>hi</body>');
+  });
+});
+
 // --- Differential harness (round-2 review evidence requirement) --------------------------------
 //
 // Compares the OLD regex (`/<!--[\s\S]*?-->/g`) against the NEW manual scan over 500+ generated
