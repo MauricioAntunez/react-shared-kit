@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   attr,
   extractImportSpecifiers,
+  MAX_MALFORMED_TAG_LENGTH,
   MAX_URL_LENGTH,
   sanitizeTagText,
   scanFontFaces,
@@ -147,6 +148,129 @@ describe('sanitizeTagText', () => {
 
     expect(result.length).toBeLessThan(400);
     expect(result).toContain('truncated');
+  });
+
+  // Boundary pins for the escaped class [\x00-\x1f\x7f-\x9f\u2028\u2029]. Reproduced: widening the
+  // class to \x7f-\xa0 (so it also escapes NO-BREAK SPACE, a legitimate printable character) left
+  // the suite at 26/26 passing before these existed \u2014 nothing here pinned the upper C1 edge.
+  it('escapes \\x9f, the last code point in the C1 range', () => {
+    expect(sanitizeTagText('a\x9fb')).toBe('a\\x9fb');
+  });
+
+  it('leaves \\xa0 (NO-BREAK SPACE), the first code point past the C1 range, unchanged', () => {
+    expect(sanitizeTagText('a\xa0b')).toBe('a\xa0b');
+  });
+
+  it('escapes \\x1f, the last code point in the C0 range', () => {
+    expect(sanitizeTagText('a\x1fb')).toBe('a\\x1fb');
+  });
+
+  it('leaves \\x20 (space), the first code point past the C0 range, unchanged', () => {
+    expect(sanitizeTagText('a\x20b')).toBe('a b');
+  });
+
+  it('leaves \\x7e (tilde), the code point just below DEL, unchanged', () => {
+    expect(sanitizeTagText('a\x7eb')).toBe('a~b');
+  });
+});
+
+// PR #9 security review MEDIUM, reproduced: 'safe.js' + '\u202e' + 'gpj.exe' passed through with
+// the RLO byte raw \u2014 a bidi-aware terminal renders everything after it in reverse order, so
+// the printed message can visually read as a different string than its bytes. These pin the
+// widened class [\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]; each is REGRESSION-red
+// against the pre-fix class (see PR report for the revert-and-confirm proof).
+describe('sanitizeTagText \u2014 bidi override and isolate characters (PR #9 security review)', () => {
+  it('escapes U+202A LEFT-TO-RIGHT EMBEDDING', () => {
+    expect(sanitizeTagText('a\u202ab')).toBe('a\\u202ab');
+  });
+
+  it('escapes U+202B RIGHT-TO-LEFT EMBEDDING', () => {
+    expect(sanitizeTagText('a\u202bb')).toBe('a\\u202bb');
+  });
+
+  it('escapes U+202C POP DIRECTIONAL FORMATTING', () => {
+    expect(sanitizeTagText('a\u202cb')).toBe('a\\u202cb');
+  });
+
+  it('escapes U+202D LEFT-TO-RIGHT OVERRIDE', () => {
+    expect(sanitizeTagText('a\u202db')).toBe('a\\u202db');
+  });
+
+  it('escapes U+202E RIGHT-TO-LEFT OVERRIDE', () => {
+    expect(sanitizeTagText('a\u202eb')).toBe('a\\u202eb');
+  });
+
+  it('escapes U+2066 LEFT-TO-RIGHT ISOLATE', () => {
+    expect(sanitizeTagText('a\u2066b')).toBe('a\\u2066b');
+  });
+
+  it('escapes U+2067 RIGHT-TO-LEFT ISOLATE', () => {
+    expect(sanitizeTagText('a\u2067b')).toBe('a\\u2067b');
+  });
+
+  it('escapes U+2068 FIRST STRONG ISOLATE', () => {
+    expect(sanitizeTagText('a\u2068b')).toBe('a\\u2068b');
+  });
+
+  it('escapes U+2069 POP DIRECTIONAL ISOLATE', () => {
+    expect(sanitizeTagText('a\u2069b')).toBe('a\\u2069b');
+  });
+
+  it("reproduces the reviewer's finding: an RLO-forged filename no longer passes through raw", () => {
+    const raw = 'safe.js\u202egpj.exe';
+
+    const result = sanitizeTagText(raw);
+
+    expect(result).not.toContain('\u202e');
+    expect(result).toContain('safe.js');
+    expect(result).toContain('gpj.exe');
+  });
+
+  // Boundary pins, both directions \u2014 the ranges are adjacent to already-covered/uncovered
+  // code points, so an off-by-one at either edge would otherwise pass unnoticed.
+  it('escapes \\u2029 (already covered) immediately followed by \\u202a (newly covered)', () => {
+    expect(sanitizeTagText('\u2029\u202a')).toBe('\\u2029\\u202a');
+  });
+
+  it('escapes U+2069 (last isolate) and leaves U+206A, the first code point past the isolates, unchanged', () => {
+    expect(sanitizeTagText('a\u2069\u206ab')).toBe('a\\u2069\u206ab');
+  });
+
+  it('leaves U+2065, the last code point before the isolates, unchanged', () => {
+    expect(sanitizeTagText('a\u2065b')).toBe('a\u2065b');
+  });
+
+  // Regression: zero-width/format characters are DELIBERATELY excluded \u2014 they neither split
+  // lines nor reorder rendering, so widening the class to cover them would be a false fix. Pinned
+  // so a future widening cannot silently swallow them.
+  it('regression: zero-width and format characters still pass through unescaped', () => {
+    expect(sanitizeTagText('a\u200bb')).toBe('a\u200bb'); // ZERO WIDTH SPACE
+    expect(sanitizeTagText('a\ufeffb')).toBe('a\ufeffb'); // ZERO WIDTH NO-BREAK SPACE / BOM
+    expect(sanitizeTagText('a\u200fb')).toBe('a\u200fb'); // RIGHT-TO-LEFT MARK
+  });
+});
+
+describe('sanitizeTagText \u2014 the cap applies to the ESCAPED length, not the raw length', () => {
+  // Reproduced: checking `tag.length <= MAX_MALFORMED_TAG_LENGTH` instead of `escaped.length`
+  // left the suite at 26/26 passing \u2014 the PR's own "caps length" tests all use raw input already
+  // far over 300, so they can't tell "checks escaped length" from "checks raw length".
+  it('truncates when raw input is under the cap but escaping inflates it past the cap', () => {
+    const raw = '\x01'.repeat(290); // 290 raw chars \u2014 well under the 300-char cap
+    expect(raw.length).toBeLessThan(MAX_MALFORMED_TAG_LENGTH);
+
+    const result = sanitizeTagText(raw);
+
+    // Each \x01 escapes to the 4-char sequence \x01, inflating 290 raw chars to 1160 escaped
+    // chars \u2014 comfortably over the cap despite the raw input being comfortably under it.
+    expect(result).toBe(`${'\\x01'.repeat(75)}\u2026 [truncated, 1160 chars]`);
+  });
+
+  it('does not truncate when the escaped form lands exactly at the cap', () => {
+    const raw = '\x01'.repeat(75); // escapes to exactly 300 chars (75 * 4)
+    const escaped = '\\x01'.repeat(75);
+    expect(escaped.length).toBe(MAX_MALFORMED_TAG_LENGTH);
+
+    expect(sanitizeTagText(raw)).toBe(escaped);
   });
 });
 
