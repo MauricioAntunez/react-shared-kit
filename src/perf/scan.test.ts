@@ -236,6 +236,15 @@ describe('sanitizeTagText \u2014 bidi override and isolate characters (PR #9 sec
     expect(sanitizeTagText('a\u2069\u206ab')).toBe('a\\u2069\u206ab');
   });
 
+  // The over-reach direction at the embed/override range's UPPER edge. PR #9 round-2 review
+  // reproduced this gap: widening the class to \u202a-\u202f left all 47 tests green, so nothing
+  // would have noticed NARROW NO-BREAK SPACE \u2014 a legitimate printable \u2014 being corrupted in
+  // every reported message. Same class as the \xa0 gap the round-1 review found at the C1 edge,
+  // reappearing one edge over. Every range edge now has a pin on BOTH sides.
+  it('escapes U+202E (last override) and leaves U+202F (NARROW NO-BREAK SPACE), the first code point past the range, unchanged', () => {
+    expect(sanitizeTagText('a\u202e\u202fb')).toBe('a\\u202e\u202fb');
+  });
+
   it('leaves U+2065, the last code point before the isolates, unchanged', () => {
     expect(sanitizeTagText('a\u2065b')).toBe('a\u2065b');
   });
