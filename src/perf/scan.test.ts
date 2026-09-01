@@ -236,6 +236,22 @@ describe('sanitizeTagText \u2014 bidi override and isolate characters (PR #9 sec
     expect(sanitizeTagText('a\u2069\u206ab')).toBe('a\\u2069\u206ab');
   });
 
+  // ENUMERATE CONTIGUOUS RUNS, NOT THE RANGE LITERALS AS WRITTEN. The class is spelled with
+  // four literals, but \u2028, \u2029 and \u202a-\u202e are adjacent and form ONE
+  // run, \u2028-\u202e. Pinning "each literal's edges" looks complete while missing that
+  // run's real lower edge, \u2027 - reproduced in PR #9 round 3: adding \u2027 to the
+  // class left all 48 tests green. The four runs and the edges each needs (a run starting at
+  // \x00 has no lower edge):
+  //   \x00-\x1f      upper \x20
+  //   \x7f-\x9f      lower \x7e, upper \xa0
+  //   \u2028-\u202e  lower \u2027, upper \u202f
+  //   \u2066-\u2069  lower \u2065, upper \u206a
+  // NOTE for whoever edits this next: write every code point as an escape sequence, never a
+  // literal character. A literal \u2028 is a line terminator in JS source and silently
+  // breaks the parse - which is how this comment failed on its first attempt.
+  it('leaves \\u2027, just below the contiguous bidi run, unchanged, and escapes \\u2028', () => {
+    expect(sanitizeTagText('a\u2027\u2028b')).toBe('a\u2027\\u2028b');
+  });
   // The over-reach direction at the embed/override range's UPPER edge. PR #9 round-2 review
   // reproduced this gap: widening the class to \u202a-\u202f left all 47 tests green, so nothing
   // would have noticed NARROW NO-BREAK SPACE \u2014 a legitimate printable \u2014 being corrupted in
