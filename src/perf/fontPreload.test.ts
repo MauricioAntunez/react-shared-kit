@@ -700,6 +700,156 @@ describe('verifyFontPreload', () => {
     });
   });
 
+  describe('FINDING (2026-09-01) — a font-free cssFiles entry is SCANNED, not unscanned-stylesheet', () => {
+    it('THE REPRO: a document linking a font-free cssFiles stylesheet, with its face inline and correctly preloaded, passes clean', () => {
+      write('one.woff2', 'font-bytes');
+      const appBundle = write('app.css', '.a{color:red}');
+      const html = write(
+        'index.html',
+        `<html><head>${stylesheetLink('/app.css')}` +
+          '<style>@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }</style>' +
+          `${PRELOAD_ONE}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [appBundle],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+
+    it('the real unscanned-stylesheet case still fires: a linked stylesheet resolving outside cssFiles is reported', () => {
+      // A face must exist SOMEWHERE in the build, or `no-faces` short-circuits before this
+      // document's stylesheet link is ever attributed — an unrelated clean document supplies it.
+      write('one.woff2', 'font-bytes');
+      const clean = write(
+        'clean.html',
+        '<html><head>' +
+          '<style>@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }</style>' +
+          `${PRELOAD_ONE}</head></html>`,
+      );
+      const html = write(
+        'index.html',
+        `<html><head>${stylesheetLink('/not-in-css-files.css')}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [clean, html],
+        cssFiles: [],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            kind: 'unscanned-stylesheet',
+            html,
+            href: '/not-in-css-files.css',
+          }),
+        ]),
+      );
+    });
+
+    it('an orphan font-free cssFiles entry that no document links still produces no problem of its own', () => {
+      write('one.woff2', 'font-bytes');
+      const orphanBundle = write('orphan-app.css', '.a{color:red}');
+      const html = write(
+        'index.html',
+        '<html><head>' +
+          '<style>@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }</style>' +
+          `${PRELOAD_ONE}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [orphanBundle],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+
+    it('cssFiles: [] with purely inline faces and no stylesheet link at all is still clean', () => {
+      write('one.woff2', 'font-bytes');
+      const html = write(
+        'index.html',
+        '<html><head>' +
+          '<style>@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }</style>' +
+          `${PRELOAD_ONE}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+
+    it('an unreadable cssFiles entry keeps reporting unscanned-stylesheet for a document that links it, alongside unreadable-css', () => {
+      // A face must exist SOMEWHERE in the build, or `no-faces` short-circuits first.
+      write('one.woff2', 'font-bytes');
+      const clean = write(
+        'clean.html',
+        '<html><head>' +
+          '<style>@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }</style>' +
+          `${PRELOAD_ONE}</head></html>`,
+      );
+      const unreadable = join(root, 'never-written.css');
+      const html = write(
+        'index.html',
+        `<html><head>${stylesheetLink('/never-written.css')}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [clean, html],
+        cssFiles: [unreadable],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'unreadable-css', css: unreadable }),
+          expect.objectContaining({
+            kind: 'unscanned-stylesheet',
+            html,
+            href: '/never-written.css',
+          }),
+        ]),
+      );
+    });
+
+    it('an empty (0-byte) cssFiles entry is SCANNED like any font-free file — a document linking it passes with its inline face', () => {
+      write('one.woff2', 'font-bytes');
+      const emptyCss = write('empty.css', '');
+      const html = write(
+        'index.html',
+        `<html><head>${stylesheetLink('/empty.css')}` +
+          '<style>@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }</style>' +
+          `${PRELOAD_ONE}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [emptyCss],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+  });
+
   describe('FINDING 2 — href is sanitized in every problem kind that echoes it (PR #8 HIGH)', () => {
     function noControlChars(detail: string): boolean {
       // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are ABSENT

@@ -64,6 +64,15 @@ import { stripComments, stripHtmlComments } from './text.ts';
  *     or returns `undefined` — is reported as `resolver-threw` or silently excluded respectively;
  *     an unresolvable stylesheet reference is `verifyFontChain`'s `unresolvable-stylesheet` to
  *     catch, not duplicated here, to avoid two gates disagreeing about the same broken `href`.)
+ *   - A `cssFiles` entry that WAS given to the gate and read successfully, but declares ZERO
+ *     `@font-face`, is SCANNED — a document linking it contributes an empty face set, never
+ *     `unscanned-stylesheet` (fixed 2026-09-01: a real consumer hit this 145 times — every
+ *     prerendered document linking one shared, font-free app bundle. `unscanned-stylesheet` means
+ *     "the gate cannot vouch for this file's faces", which is false the moment the file was read;
+ *     "scanned" tracks membership in `cssFiles` plus a successful read, never inferred from
+ *     whether any faces turned up). A `cssFiles` entry that fails to READ (`unreadable-css`) is
+ *     the opposite case and keeps `unscanned-stylesheet` on top of it — the gate genuinely could
+ *     not vouch for that file, so both problems are reported, honestly, not redundantly.
  *
  *   `expectedFacesPerDocument` IS A COUNT FLOOR, NOT A CONTENT ASSERTION — the one thing it cannot
  *   see, stated here so a green result is not read as more than it is. It answers "does this
@@ -319,9 +328,16 @@ function readHtmlDocs(htmlFiles: string[], problems: FontPreloadProblem[]): Html
   return docs;
 }
 
-/** Reads every CSS file once, reporting `unreadable-css` and returning its declared faces. */
-function readCssFaces(cssFiles: string[], problems: FontPreloadProblem[]): DeclaredFace[] {
+/** Reads every CSS file once, reporting `unreadable-css` and returning its declared faces plus
+ * the set of entries that were successfully READ (irrespective of whether they declared any
+ * `@font-face` at all). `scanned` is what makes a font-free `cssFiles` entry distinguishable from
+ * one this gate was never given — see `groupFacesBySource` and the module doc comment. */
+function readCssFaces(
+  cssFiles: string[],
+  problems: FontPreloadProblem[],
+): { faces: DeclaredFace[]; scanned: Set<string> } {
   const faces: DeclaredFace[] = [];
+  const scanned = new Set<string>();
   for (const [index, file] of cssFiles.entries()) {
     assertStringOption(file, `cssFiles[${index}]`);
     let css: string;
@@ -335,15 +351,30 @@ function readCssFaces(cssFiles: string[], problems: FontPreloadProblem[]): Decla
       });
       continue;
     }
+    scanned.add(file);
     faces.push(...facesFromCss(stripComments(css), file, problems));
   }
-  return faces;
+  return { faces, scanned };
 }
 
 /** Groups already-collected `DeclaredFace`s by their `source` (a `cssFiles` entry's own path) —
- * how `attributeLinkedCssFaces` looks up "faces belonging to THIS resolved stylesheet path". */
-function groupFacesBySource(faces: readonly DeclaredFace[]): Map<string, DeclaredFace[]> {
+ * how `attributeLinkedCssFaces` looks up "faces belonging to THIS resolved stylesheet path".
+ *
+ * `scanned` seeds an entry (possibly empty) for every `cssFiles` entry that was successfully
+ * READ, not only the ones that declared at least one face. Building this map from `faces` alone
+ * was the false-positive reproduced 2026-09-01: `facesFromCss` returns `[]` for a stylesheet with
+ * zero `@font-face` blocks, so a font-free-but-real `cssFiles` entry never got a map key, and
+ * `attributeLinkedCssFaces`'s "was this stylesheet scanned?" lookup misread that as "never given
+ * to the gate" — reporting `unscanned-stylesheet` against a file the gate DID read successfully.
+ * A `cssFiles` entry that failed to read (`unreadable-css`, already reported) is deliberately NOT
+ * in `scanned`: the gate genuinely could not vouch for its faces, so a document linking it still
+ * gets `unscanned-stylesheet` — an honest second signal, not a duplicate of `unreadable-css`. */
+function groupFacesBySource(
+  faces: readonly DeclaredFace[],
+  scanned: ReadonlySet<string>,
+): Map<string, DeclaredFace[]> {
   const bySource = new Map<string, DeclaredFace[]>();
+  for (const source of scanned) bySource.set(source, []);
   for (const face of faces) {
     const existing = bySource.get(face.source);
     if (existing === undefined) bySource.set(face.source, [face]);
@@ -642,7 +673,7 @@ export function verifyFontPreload(options: VerifyFontPreloadOptions): VerifyFont
   }
 
   const docs = readHtmlDocs(htmlFiles, problems);
-  const cssFaces = readCssFaces(cssFiles, problems);
+  const { faces: cssFaces, scanned: scannedCssFiles } = readCssFaces(cssFiles, problems);
   const inlineFacesByDoc = new Map<string, DeclaredFace[]>();
   for (const doc of docs) {
     inlineFacesByDoc.set(doc.file, facesFromInlineStyles(doc.unblanked, doc.file, problems));
@@ -658,7 +689,7 @@ export function verifyFontPreload(options: VerifyFontPreloadOptions): VerifyFont
   }
 
   const resolvedUrls = resolveDistinctFaceUrls(allFaces, resolveHref, problems);
-  const cssFacesBySource = groupFacesBySource(cssFaces);
+  const cssFacesBySource = groupFacesBySource(cssFaces, scannedCssFiles);
 
   for (const doc of docs) {
     const linkedCssFaceUrls = attributeLinkedCssFaces(doc, cssFacesBySource, resolveHref, problems);
