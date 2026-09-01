@@ -725,6 +725,11 @@ describe('verifyFontPreload', () => {
       for (const problem of relevant) {
         expect(problem.detail.includes('\n')).toBe(false);
         expect(noControlChars(problem.detail)).toBe(true);
+        // Sanitization must ESCAPE, not destroy: the message still names the offending href.
+        expect(problem.detail).toContain('\\n');
+        const rawHref = (problem as { href: string }).href;
+        const offender = rawHref.split('\n')[0] ?? '';
+        expect(problem.detail).toContain(offender);
       }
     });
 
@@ -768,6 +773,11 @@ describe('verifyFontPreload', () => {
       for (const problem of relevant) {
         expect(problem.detail.includes('\n')).toBe(false);
         expect(noControlChars(problem.detail)).toBe(true);
+        // Sanitization must ESCAPE, not destroy: the message still names the offending href.
+        expect(problem.detail).toContain('\\n');
+        const rawHref = (problem as { href: string }).href;
+        const offender = rawHref.split('\n')[0] ?? '';
+        expect(problem.detail).toContain(offender);
       }
     });
 
@@ -792,6 +802,9 @@ describe('verifyFontPreload', () => {
       expect(problem).toBeDefined();
       expect(problem?.detail.includes('\n')).toBe(false);
       expect(noControlChars(problem?.detail ?? '')).toBe(true);
+      // Sanitization must ESCAPE, not destroy: the message still names the offending href.
+      expect(problem?.detail).toContain('\\n');
+      expect(problem?.detail).toContain('/evil');
     });
   });
 });

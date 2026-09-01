@@ -73,6 +73,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -103,6 +104,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './nested-minified.css': nested }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -135,6 +137,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: resolverFor({ [`./nested-k3-${i}.css`]: nested }),
+        expectedFacesPerDocument: 0,
       });
 
       const problem = result.problems.find((p) => p.kind === 'deep-font');
@@ -168,6 +171,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './nested-multi.css': nested }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -192,6 +196,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
@@ -211,6 +216,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -233,6 +239,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
@@ -250,6 +257,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './fonts.css': fontsSheet }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -273,6 +281,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './mid.css': mid, './leaf.css': leaf }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -299,6 +308,7 @@ describe('verifyFontChain', () => {
       // @ts-expect-error maxChainDepth is not part of the options type any more
       maxChainDepth: 99,
       resolveImport: resolverFor({ './leaf-nothresh.css': leaf }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -319,6 +329,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './fonts-swap.css': fontsSheet }),
+      expectedFacesPerDocument: 0,
     });
 
     const problem = result.problems.find((p) => p.kind === 'deep-font');
@@ -338,6 +349,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     const problem = result.problems.find((p) => p.kind === 'deep-font');
@@ -357,6 +369,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -375,6 +388,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: missing }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -410,6 +424,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: aPath }),
       resolveImport: resolverFor({ './a.css': aPath, './b.css': bPath }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -433,6 +448,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ './a-order.css': a, './c.css': c }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -452,6 +468,7 @@ describe('verifyFontChain', () => {
       resolveImport: () => {
         throw boom;
       },
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -475,6 +492,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -501,6 +519,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({ 'nested-specifier.css': nestedRealFile }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -538,6 +557,7 @@ describe('verifyFontChain', () => {
         './n.css': n,
         './shared.css': shared,
       }),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -555,6 +575,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: missing }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     const problem = result.problems.find((p) => p.kind === 'unreadable-stylesheet');
@@ -576,6 +597,7 @@ describe('verifyFontChain', () => {
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
         resolveImport: (() => ({ notAPath: true })) as any,
+        expectedFacesPerDocument: 0,
       });
     } catch (error) {
       caught = error;
@@ -600,6 +622,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: () => new URL('https://example.com/whatever.css') as unknown as string,
+        expectedFacesPerDocument: 0,
       });
     } catch (error) {
       caught = error;
@@ -621,6 +644,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [html],
         resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
         resolveImport: () => proxyReturn,
+        expectedFacesPerDocument: 0,
       });
     } catch (error) {
       caught = error;
@@ -643,6 +667,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: () => nulBytePath,
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -663,6 +688,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: () => root, // a real directory, not a file
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -691,6 +717,7 @@ describe('verifyFontChain', () => {
           htmlFiles: [html],
           resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
           resolveImport: () => undefined,
+          expectedFacesPerDocument: 0,
         }),
       ).toThrow('BUG: comment-stripping regex blew up');
     } finally {
@@ -714,6 +741,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -736,6 +764,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     // The document now has zero LIVE stylesheets — it must be reported as such (see the
@@ -769,6 +798,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -791,6 +821,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -814,6 +845,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [pageA, pageB],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: shared }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -831,6 +863,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -846,6 +879,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -868,6 +902,7 @@ describe('verifyFontChain', () => {
         throw boom;
       },
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -892,6 +927,7 @@ describe('verifyFontChain', () => {
         // biome-ignore lint/suspicious/noExplicitAny: deliberately violating the resolver contract
         resolveStylesheet: (() => ({ notAPath: true })) as any,
         resolveImport: resolverFor({}),
+        expectedFacesPerDocument: 0,
       });
     } catch (error) {
       caught = error;
@@ -919,6 +955,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result).toEqual({ ok: true, problems: [] });
@@ -943,6 +980,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -958,6 +996,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -979,6 +1018,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [withStylesheet, withoutStylesheet],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1000,6 +1040,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [badHtml],
         resolveStylesheet: noStylesheets,
         resolveImport: resolverFor({}),
+        expectedFacesPerDocument: 0,
       });
     } catch {
       threw = true;
@@ -1031,6 +1072,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [badHtml, goodHtml],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.problems.some((p) => p.kind === 'unreadable-html')).toBe(true);
@@ -1045,6 +1087,7 @@ describe('verifyFontChain', () => {
         htmlFiles: [{ notAPath: true } as any],
         resolveStylesheet: noStylesheets,
         resolveImport: resolverFor({}),
+        expectedFacesPerDocument: 0,
       });
     } catch (error) {
       caught = error;
@@ -1074,6 +1117,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1098,6 +1142,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1128,6 +1173,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1154,6 +1200,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1180,6 +1227,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
@@ -1199,6 +1247,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
@@ -1228,6 +1277,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: noStylesheets,
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     const malformed = result.problems.find((p) => p.kind === 'malformed-stylesheet-link');
@@ -1294,6 +1344,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1317,6 +1368,7 @@ describe('verifyFontChain', () => {
       htmlFiles: [html],
       resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
       resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1342,6 +1394,7 @@ describe('verifyFontChain', () => {
         resolveImportCalled = true;
         return undefined;
       },
+      expectedFacesPerDocument: 0,
     });
 
     expect(result.ok).toBe(false);
@@ -1352,5 +1405,356 @@ describe('verifyFontChain', () => {
     // known not to be the real specifier (that is exactly what could not be captured).
     expect(resolveImportCalled).toBe(false);
     expect(result.problems.some((p) => p.kind === 'unresolvable-import')).toBe(false);
+  });
+
+  // --- expectedFacesPerDocument: the anti-vacuity floor closing the shipped defect -------------
+  // Controller-reproduced: strip the whole @font-face-bearing <style> block from a document (an
+  // accidental template deletion, a truncated build) and, with no stylesheet graph reaching a font
+  // either, verifyFontChain used to return { ok: true, problems: [] } having examined ZERO faces.
+  // See module doc comment's BREAKING CHANGE section for the full reasoning.
+
+  it("RED: reports under-declared-faces when a document's entire @font-face-bearing <style> block is stripped — the exact vacuous pass this floor closes", () => {
+    const entry = write('floor-repro-entry.css', 'body { color: red; }');
+    const healthyHtml = htmlWithStylesheet(
+      'floor-repro-healthy.html',
+      "<style>@font-face { font-family: 'Inter'; src: url('/inter.woff2'); }</style>",
+    );
+    const strippedHtml = htmlWithStylesheet('floor-repro-stripped.html');
+
+    // A: healthy — the inline @font-face is present, so the floor is met and the gate is clean.
+    const healthyResult = verifyFontChain({
+      htmlFiles: [healthyHtml],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 1,
+    });
+    expect(healthyResult).toEqual({ ok: true, problems: [] });
+
+    // B: the defect — the whole <style> block is gone, no stylesheet in the graph declares a font
+    // either. Under the shipped (buggy) gate this returned { ok: true, problems: [] }. The floor
+    // must now catch it.
+    const strippedResult = verifyFontChain({
+      htmlFiles: [strippedHtml],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 1,
+    });
+
+    expect(strippedResult.ok).toBe(false);
+    const problem = strippedResult.problems.find((p) => p.kind === 'under-declared-faces');
+    expect(problem).toBeDefined();
+    expect(problem?.document).toBe(strippedHtml);
+    expect(problem?.count).toBe(0);
+    expect(problem?.expected).toBe(1);
+  });
+
+  it('reports under-declared-faces for EVERY one of 50 documents declaring zero fonts, not a vacuous pass over the batch', () => {
+    const entry = write('floor-50-entry.css', 'body { color: blue; }');
+    const htmlFiles = Array.from({ length: 50 }, (_, i) =>
+      htmlWithStylesheet(`floor-50-doc-${i}.html`),
+    );
+
+    const result = verifyFontChain({
+      htmlFiles,
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 1,
+    });
+
+    expect(result.ok).toBe(false);
+    const underDeclared = result.problems.filter((p) => p.kind === 'under-declared-faces');
+    expect(underDeclared).toHaveLength(50);
+    expect(new Set(underDeclared.map((p) => p.document)).size).toBe(50);
+    expect(underDeclared.every((p) => p.count === 0 && p.expected === 1)).toBe(true);
+  });
+
+  it('reports under-declared-faces for ONLY the sibling document that lost its faces — per document, never a build-wide union', () => {
+    // If the floor were fed a build-wide union of font URLs (the exact hole this module's doc
+    // comment documents web-chile's round-2 review reproducing), pageC's own zero count would be
+    // masked by pageA's and pageB's URLs still being present somewhere in the batch. It is not:
+    // only pageC is reported.
+    const entry = write('floor-union-entry.css', 'body { color: green; }');
+    const pageA = htmlWithStylesheet(
+      'floor-union-pageA.html',
+      "<style>@font-face { font-family: 'A'; src: url('/a.woff2'); }</style>",
+    );
+    const pageB = htmlWithStylesheet(
+      'floor-union-pageB.html',
+      "<style>@font-face { font-family: 'B'; src: url('/b.woff2'); }</style>",
+    );
+    const pageCStripped = htmlWithStylesheet('floor-union-pageC.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [pageA, pageB, pageCStripped],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 1,
+    });
+
+    expect(result.ok).toBe(false);
+    const underDeclared = result.problems.filter((p) => p.kind === 'under-declared-faces');
+    expect(underDeclared).toHaveLength(1);
+    expect(underDeclared[0]?.document).toBe(pageCStripped);
+  });
+
+  it('passes when a document declares EXACTLY the pinned floor count of distinct faces', () => {
+    const entry = write('floor-exact-entry.css', 'body { color: red; }');
+    const html = htmlWithStylesheet(
+      'floor-exact.html',
+      '<style>' +
+        "@font-face { font-family: 'A'; src: url('/a.woff2'); }" +
+        "@font-face { font-family: 'B'; src: url('/b.woff2'); }" +
+        '</style>',
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 2,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.problems.some((p) => p.kind === 'under-declared-faces')).toBe(false);
+  });
+
+  it('reports under-declared-faces when a document is exactly ONE below the pinned floor', () => {
+    const entry = write('floor-one-below-entry.css', 'body { color: red; }');
+    const html = htmlWithStylesheet(
+      'floor-one-below.html',
+      "<style>@font-face { font-family: 'A'; src: url('/a.woff2'); }</style>",
+    );
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+      expectedFacesPerDocument: 2,
+    });
+
+    expect(result.ok).toBe(false);
+    const problem = result.problems.find((p) => p.kind === 'under-declared-faces');
+    expect(problem).toBeDefined();
+    expect(problem?.count).toBe(1);
+    expect(problem?.expected).toBe(2);
+  });
+
+  it('counts a face reached via the stylesheet GRAPH toward the floor, not only inline faces', () => {
+    const fontsSheet = write(
+      'floor-graph-fonts.css',
+      `@font-face { font-family: 'Inter'; src: url('/inter.woff2') format('woff2'); }`,
+    );
+    const entry = write('floor-graph-entry.css', `@import "./floor-graph-fonts.css";`);
+    const html = htmlWithStylesheet('floor-graph.html');
+
+    const result = verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({ './floor-graph-fonts.css': fontsSheet }),
+      expectedFacesPerDocument: 1,
+    });
+
+    // This face is still reported as deep-font (reached only via CSS, no exemption present) — that
+    // finding is unrelated to and unaffected by the floor. What this test pins is that the
+    // graph-discovered face DOES count toward expectedFacesPerDocument, so under-declared-faces
+    // must NOT also fire alongside it.
+    expect(result.problems.some((p) => p.kind === 'deep-font')).toBe(true);
+    expect(result.problems.some((p) => p.kind === 'under-declared-faces')).toBe(false);
+  });
+
+  it.skip('TYPE-ONLY: omitting expectedFacesPerDocument does not compile — a required anti-vacuity floor cannot be silently skipped', () => {
+    const entry = write('floor-type-only-entry.css', 'body { color: red; }');
+    const html = htmlWithStylesheet('floor-type-only.html');
+
+    // @ts-expect-error expectedFacesPerDocument is REQUIRED, not optional — an optional floor would
+    // recreate the exact vacuous "0 of 0" pass this option exists to close for any consumer who
+    // omits it (see module doc comment's BREAKING CHANGE section). npm run typecheck includes this
+    // test file, so a stale @ts-expect-error here fails typecheck — that IS the proof the option is
+    // genuinely required, not merely documented as such.
+    verifyFontChain({
+      htmlFiles: [html],
+      resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+      resolveImport: resolverFor({}),
+    });
+  });
+
+  // --- Log-injection: every file-content-derived value reaching `message` must be sanitized ---
+  //
+  // Security re-review finding (HIGH): a prior fix round sanitized fontPreload.ts/fontAssets.ts/
+  // fontImport.ts/fontUsage.ts but NOT this file, because the original finding named only the
+  // first three. fontChain.ts had the identical defect: scan.ts's bounded capture
+  // (`[^'"]{1,2048}`) bounds LENGTH but does not exclude \n/\r/control bytes, so a crafted
+  // specifier/href/@font-face chain segment could forge extra "lines" — including a fake PASS
+  // line — into a consumer's printed output. Every assertion below checks BOTH halves: no raw
+  // control character survives in `message`, AND the message still identifies the offending value
+  // (the weak shape — asserting only `!includes('\n')` — still passes if sanitizeTagText were
+  // replaced by a function returning a constant; see the RED proof at the end of this describe).
+  describe('log-injection: sanitizes file-content-derived values before they reach message', () => {
+    function assertNoRawControlChars(message: string): void {
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: assertion target, not a scanner.
+      expect(/[\x00-\x1f\x7f]/.test(message)).toBe(false);
+    }
+
+    it("sanitizes an @import specifier carrying \\n + a forged PASS line before it reaches unresolvable-import's message", () => {
+      const forged =
+        './missing.css\n[PASS] font-chain: no deep fonts found, all clear). font-display: swap ' +
+        'does not fix this. font-chain';
+      const entry = write('inject-unresolvable-import.css', `@import "${forged}";`);
+      const html = htmlWithStylesheet('inject-unresolvable-import.html');
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+        resolveImport: () => undefined,
+        expectedFacesPerDocument: 0,
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'unresolvable-import');
+      expect(problem).toBeDefined();
+      const message = problem?.message ?? '';
+      assertNoRawControlChars(message);
+      expect(message).toContain('\\n');
+      expect(message).toContain('./missing.css');
+      expect(message).toContain('[PASS] font-chain');
+      // The raw specifier field stays UNSANITIZED — structured data for programmatic consumers,
+      // per the brief's "structured fields stay raw" rule. Only `message` is sanitized.
+      expect((problem as { specifier?: string })?.specifier).toBe(forged);
+    });
+
+    it('sanitizes a literal \\n inside a quoted href="..." before it reaches unresolvable-stylesheet\'s message', () => {
+      const forgedHref = '/entry.css\n[PASS] font-chain: no deep fonts found, all clear).';
+      const html = write(
+        'inject-unresolvable-stylesheet.html',
+        `<!doctype html><html><head><link rel="stylesheet" href="${forgedHref}"></head><body>hi</body></html>`,
+      );
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: () => undefined,
+        resolveImport: resolverFor({}),
+        expectedFacesPerDocument: 0,
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'unresolvable-stylesheet');
+      expect(problem).toBeDefined();
+      const message = problem?.message ?? '';
+      assertNoRawControlChars(message);
+      expect(message).toContain('\\n');
+      expect(message).toContain('/entry.css');
+      expect(message).toContain('[PASS] font-chain');
+      expect((problem as { href?: string })?.href).toBe(forgedHref);
+    });
+
+    it('HEADLINE: a forged PASS line injected into a deep-font chain segment does not survive into the message, and the real finding stays legible', () => {
+      // This is the damaging shape from the finding: a GENUINE deep-font failure whose chain
+      // contains an attacker-controlled @import specifier crafted to look like a clean PASS line.
+      const forgedSpecifier =
+        './nested.css\n[PASS] font-chain: no deep fonts found, all clear). font-display: swap ' +
+        'does not fix this. font-chain';
+      const nested = write(
+        'inject-deep-font-nested.css',
+        `@font-face { font-family: 'Evil'; src: url('/evil.woff2') format('woff2'); }`,
+      );
+      const entry = write('inject-deep-font-entry.css', `@import "${forgedSpecifier}";`);
+      const html = htmlWithStylesheet('inject-deep-font.html');
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+        resolveImport: resolverFor({ [forgedSpecifier]: nested }),
+        expectedFacesPerDocument: 0,
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'deep-font');
+      expect(problem).toBeDefined();
+      const message = problem?.message ?? '';
+      assertNoRawControlChars(message);
+      // The forged line never becomes its own line: the message is exactly one line.
+      expect(message.split('\n')).toHaveLength(1);
+      // The forged text is still visible (escaped) — sanitization identifies, never redacts.
+      expect(message).toContain('\\n[PASS] font-chain');
+      // The REAL finding is still legible: the hard rule, the URL, and the remedy are all present.
+      expect(message).toContain('must never be imported via CSS');
+      expect(message).toContain('font-display: swap does not fix this');
+      expect(problem?.fontUrl).toBe('/evil.woff2');
+      // Structured chain field stays raw for programmatic consumers.
+      expect(problem?.chain).toEqual([entry, forgedSpecifier]);
+    });
+
+    it("sanitizes \\r and a lone control byte (not just \\n) in a specifier reaching resolver-error's message", () => {
+      const evilSpecifier = './x.css\r\x07[PASS] font-chain forged';
+      const entry = write('inject-resolver-error.css', `@import "${evilSpecifier}";`);
+      const html = htmlWithStylesheet('inject-resolver-error.html');
+      const thrown = new Error('boom\r\x07 forged PASS line');
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+        resolveImport: () => {
+          throw thrown;
+        },
+        expectedFacesPerDocument: 0,
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'resolver-error');
+      expect(problem).toBeDefined();
+      const message = problem?.message ?? '';
+      assertNoRawControlChars(message);
+      expect(message).toContain('\\r');
+      expect(message).toContain('\\x07');
+      expect(message).toContain('./x.css');
+      expect(message).toContain('boom');
+    });
+
+    it("sanitizes an injected chain segment reaching unparseable-font-face's message", () => {
+      const forgedSpecifier = './truncated.css\n[PASS] font-chain forged clean';
+      const nested = write(
+        'inject-unparseable-nested.css',
+        `@font-face { font-family: 'Trunc'; src: url('/trunc.woff2')`, // no closing "}"
+      );
+      const entry = write('inject-unparseable-entry.css', `@import "${forgedSpecifier}";`);
+      const html = htmlWithStylesheet('inject-unparseable.html');
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+        resolveImport: resolverFor({ [forgedSpecifier]: nested }),
+        expectedFacesPerDocument: 0,
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'unparseable-font-face');
+      expect(problem).toBeDefined();
+      const message = problem?.message ?? '';
+      assertNoRawControlChars(message);
+      expect(message).toContain('\\n');
+      expect(message).toContain('./truncated.css');
+      expect(message).toContain('[PASS] font-chain forged clean');
+    });
+
+    it("sanitizes an injected chain segment reaching oversized-url's message", () => {
+      const forgedSpecifier = './oversized.css\n[PASS] font-chain forged clean';
+      const longUrl = 'a'.repeat(2100);
+      const nested = write(
+        'inject-oversized-nested.css',
+        `@font-face { font-family: 'Big'; src: url(${longUrl}) format('woff2'); }`,
+      );
+      const entry = write('inject-oversized-entry.css', `@import "${forgedSpecifier}";`);
+      const html = htmlWithStylesheet('inject-oversized.html');
+
+      const result = verifyFontChain({
+        htmlFiles: [html],
+        resolveStylesheet: resolverFor({ [STYLESHEET_HREF]: entry }),
+        resolveImport: resolverFor({ [forgedSpecifier]: nested }),
+        expectedFacesPerDocument: 0,
+      });
+
+      const problem = result.problems.find((p) => p.kind === 'oversized-url');
+      expect(problem).toBeDefined();
+      const message = problem?.message ?? '';
+      assertNoRawControlChars(message);
+      expect(message).toContain('\\n');
+      expect(message).toContain('./oversized.css');
+      expect(message).toContain('[PASS] font-chain forged clean');
+    });
   });
 });

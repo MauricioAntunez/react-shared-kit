@@ -91,6 +91,41 @@
  *     disagree in form will see a false `deep-font`; this mirrors the same documented limitation
  *     already accepted for `data:` URIs above and for `resolveHref`/`resolveImport` elsewhere in
  *     this module — the gate reasons about strings as written, not resolved URL identity.
+ *
+ * BREAKING CHANGE (2026-09-01): `expectedFacesPerDocument` is now a REQUIRED option. A live vacuity
+ * bug was reproduced against the shipped gate: strip the entire `@font-face`-bearing `<style>`
+ * block out of a document — an accidental template deletion, a truncated build — and, with no
+ * `<link rel="stylesheet">` graph reaching a font either, `verifyFontChain` returned `{ ok: true,
+ * problems: [] }` having examined ZERO faces for that document. Every check above (`deep-font`,
+ * `unparseable-font-face`, ...) only ever fires when a font IS found; none of them can say "this
+ * document declares no fonts at all, and that itself is a defect" — that is a distinct class of
+ * finding this module did not have. `font-display: swap` then renders fallback text permanently,
+ * with no visual flash to notice and a green build. A compile error naming the missing option is
+ * strictly better than that silent green, which is why this is a required option, not an optional
+ * one with a default — see `VerifyFontPreloadOptions.expectedFacesPerDocument` in `./fontPreload.ts`
+ * for the sibling gate's identical reasoning and the reproduction that first motivated it (a
+ * build-wide union floor stayed non-empty while one document out of many lost everything). The
+ * floor here is evaluated PER DOCUMENT — `count` is `(this document's own inline `@font-face` URLs)
+ * ∪ (every font URL discovered while walking this document's own stylesheet graph, at ANY depth,
+ * exempt or not)` — never a build-wide union, for the same reason: a union could stay non-empty
+ * while one document alone lost every face.
+ *
+ * `expectedFacesPerDocument` IS A COUNT FLOOR, NOT A CONTENT ASSERTION, and it can only ever make
+ * this gate STRICTER — it is not a tolerance knob (it does not reintroduce the `maxChainDepth`
+ * mistake removed above; raising it can never accept a `deep-font` that would otherwise fail).
+ * Stated plainly, mirroring `./fontPreload.ts`'s wording, so a green `under-declared-faces` check
+ * is never read as more than it is:
+ *   - it answers "does this document have at least N distinct font URLs discoverable", never "are
+ *     they the RIGHT N" — a document keeping the right COUNT of faces while losing the right ONES
+ *     (swapping one face for a duplicate of another) passes;
+ *   - a template regression that removes the SAME face from EVERY document falls below no
+ *     per-document threshold, unless the pinned number is now too high for every document at once
+ *     — every document falls together, so none is anomalous relative to the pinned number;
+ *   - consequently, the number must be pinned to what the RICHEST document genuinely declares, not
+ *     to the smallest count every document happens to satisfy — pinning to the smallest common
+ *     count would let every other document silently under-declare down to that floor.
+ * This gate, `deep-font`'s existing checks, and a browser sweep are complementary, not redundant:
+ * this floor is necessary, not sufficient.
  */
 import { readFileSync } from 'node:fs';
 import { assertResolverReturn, assertStringOption } from './errors.ts';
@@ -114,7 +149,8 @@ export type FontChainProblemKind =
   | 'resolver-error'
   | 'unparseable-font-face'
   | 'oversized-url'
-  | 'deep-font';
+  | 'deep-font'
+  | 'under-declared-faces';
 
 /**
  * Discriminated union, one variant per `kind` — same shape `DanglingClassProblem` in
@@ -283,6 +319,17 @@ export type FontChainProblem =
       fontUrl: string;
       chain: string[];
       message: string;
+    }
+  | {
+      kind: 'under-declared-faces';
+      document: string;
+      /** Distinct font URLs actually discovered for this document (its own inline `<style>`
+       * `@font-face` blocks, unioned with every font URL found while walking this document's own
+       * stylesheet graph — see `VerifyFontChainOptions.expectedFacesPerDocument`). */
+      count: number;
+      /** The pinned floor, echoed back verbatim from `expectedFacesPerDocument`. */
+      expected: number;
+      message: string;
     };
 
 export interface VerifyFontChainOptions {
@@ -304,6 +351,13 @@ export interface VerifyFontChainOptions {
    * also caught and reported (`resolver-error`), distinct from a returned `undefined`, so a
    * consumer's resolver bug is never confused with a genuinely missing file. */
   resolveImport: (specifier: string) => string | undefined;
+  /** Floor on DISTINCT font URLs a single document must have discoverable at all (via its own
+   * inline `@font-face` blocks, plus every font URL found while walking that document's own
+   * `<link rel="stylesheet">` graph — deep or exempt, it still counts as "discovered") before the
+   * document is considered to have declared any fonts at all. REQUIRED — see the module doc
+   * comment (anti-vacuity section) for why an optional floor recreates the exact vacuous "0 faces
+   * examined, ok: true" pass this option exists to close, and for what a count floor cannot see. */
+  expectedFacesPerDocument: number;
 }
 
 export interface VerifyFontChainResult {
@@ -458,6 +512,14 @@ interface WalkState {
    * enqueued, not when it is processed — that is what guarantees the first (and only) time a node
    * is reached is via its shortest `@import` path, and what guarantees termination on a cycle. */
   visited: Set<string>;
+  /** Every DISTINCT, non-oversized font URL found while walking THIS document's own stylesheet
+   * graph — populated regardless of `exemptUrls` membership (a `deep-font` URL still counts as
+   * "discovered for this document", it is merely discovered LATE). Shared across every
+   * `<link rel="stylesheet">` entry point this document has (`processDocument` passes the same
+   * `Set` into each entry's `WalkState`), so a document with several stylesheet links gets one
+   * combined count, not one count per entry. Feeds the `expectedFacesPerDocument` floor — see the
+   * module doc comment's BREAKING CHANGE section. */
+  discoveredFaceUrls: Set<string>;
 }
 
 /**
@@ -495,7 +557,7 @@ function readStylesheet(state: WalkState, path: string, chain: string[]): string
       entry: state.entryLabel,
       stylesheet: path,
       chain,
-      message: `could not read stylesheet "${path}": ${String(error)}`,
+      message: `could not read stylesheet "${sanitizeTagText(path)}": ${sanitizeTagText(String(error))}`,
     });
     return undefined;
   }
@@ -523,8 +585,8 @@ function safeResolveImport(
       specifier,
       chain: nextChain,
       message:
-        `resolveImport threw while resolving @import "${specifier}" ` +
-        `(chain: ${nextChain.join(' -> ')}): ${String(error)}`,
+        `resolveImport threw while resolving @import "${sanitizeTagText(specifier)}" ` +
+        `(chain: ${nextChain.map(sanitizeTagText).join(' -> ')}): ${sanitizeTagText(String(error))}`,
     });
     return undefined;
   }
@@ -541,8 +603,9 @@ function safeResolveImport(
       specifier,
       chain: nextChain,
       message:
-        `@import "${specifier}" (chain: ${nextChain.join(' -> ')}) does not resolve to a file — ` +
-        'cannot verify whether it hides a font behind a nested parse.',
+        `@import "${sanitizeTagText(specifier)}" (chain: ` +
+        `${nextChain.map(sanitizeTagText).join(' -> ')}) does not resolve to a file — cannot ` +
+        'verify whether it hides a font behind a nested parse.',
     });
     return undefined;
   }
@@ -580,10 +643,11 @@ function reportOversizedUrl(
     excerpt,
     chain,
     message:
-      `${contextLabel} in "${stylesheet}" (chain: ${chain.join(' -> ')}) exceeds ` +
-      `${MAX_URL_LENGTH} characters, or has no closing delimiter nearby, and could not be safely ` +
-      'scanned. Reported explicitly rather than silently skipped — a font hidden behind an ' +
-      `over-long URL must never vanish from this gate with no trace. Excerpt: "${excerpt}"`,
+      `${contextLabel} in "${sanitizeTagText(stylesheet)}" (chain: ` +
+      `${chain.map(sanitizeTagText).join(' -> ')}) exceeds ${MAX_URL_LENGTH} characters, or has ` +
+      'no closing delimiter nearby, and could not be safely scanned. Reported explicitly rather ' +
+      'than silently skipped — a font hidden behind an over-long URL must never vanish from this ' +
+      `gate with no trace. Excerpt: "${sanitizeTagText(excerpt)}"`,
   });
 }
 
@@ -621,9 +685,9 @@ function reportFontFaces(
       stylesheet: path,
       chain,
       message:
-        `${unterminatedBlocks} @font-face block(s) in "${path}" (chain: ${chain.join(' -> ')}) ` +
-        'have no closing "}" and could not be parsed. A malformed build artifact is being ' +
-        'reported rather than silently skipped.',
+        `${unterminatedBlocks} @font-face block(s) in "${sanitizeTagText(path)}" (chain: ` +
+        `${chain.map(sanitizeTagText).join(' -> ')}) have no closing "}" and could not be ` +
+        'parsed. A malformed build artifact is being reported rather than silently skipped.',
     });
   }
 
@@ -632,6 +696,9 @@ function reportFontFaces(
       reportOversizedUrl(state, url.value, path, chain, 'A font src: url()');
       continue;
     }
+    // Feeds the expectedFacesPerDocument floor regardless of exemption — a deep-font URL is still
+    // a font this document HAS, merely discovered late (see WalkState.discoveredFaceUrls doc).
+    state.discoveredFaceUrls.add(url.value);
     if (state.exemptUrls.has(url.value)) continue;
     state.problems.push({
       kind: 'deep-font',
@@ -641,7 +708,7 @@ function reportFontFaces(
       chain,
       message:
         `${REMEDY} This URL is reachable only after ${depth} stylesheet hop(s) from the ` +
-        `document (chain: ${chain.join(' -> ')}). ${SWAP_DOES_NOT_FIX_THIS}`,
+        `document (chain: ${chain.map(sanitizeTagText).join(' -> ')}). ${SWAP_DOES_NOT_FIX_THIS}`,
     });
   }
 }
@@ -697,16 +764,57 @@ function walk(state: WalkState, entryPath: string): void {
   }
 }
 
-/** Extracts, from ONE document's already comment-stripped html text, the union of BOTH exemption
- * shapes for THAT document alone — a preloaded font URL and a font declared in an inline
- * `<style>`. Never unioned across documents (CRITICAL 2; see `VerifyFontChainOptions.htmlFiles`):
+/** Extracts, from ONE document's already comment-stripped html text, both signals this gate reads
+ * off a document directly (i.e. without walking any stylesheet): `exemptUrls`, the union of BOTH
+ * exemption shapes for THAT document alone (a preloaded font URL and a font declared in an inline
+ * `<style>`) — never unioned across documents (CRITICAL 2; see `VerifyFontChainOptions.htmlFiles`),
  * a preload in pageA must not exempt the same font in pageB, since the browser's preload scanner
- * runs per-navigation and pageA's fix never reaches pageB. */
-function collectDocumentExemptUrls(strippedHtml: string): Set<string> {
-  const exemptUrls = new Set<string>();
+ * runs per-navigation and pageA's fix never reaches pageB — and `inlineFontFaceUrls` alone, which
+ * doubles as one of the two sources feeding the `expectedFacesPerDocument` floor (see module doc
+ * comment's BREAKING CHANGE section). Kept as two separate sets, not one reused for both purposes,
+ * because a PRELOAD-only URL (a `<link rel="preload">` with no matching `@font-face` anywhere)
+ * legitimately exempts a font from `deep-font` but is not itself a declared face, and must not
+ * inflate the floor's count. */
+function collectDocumentSignals(strippedHtml: string): {
+  exemptUrls: Set<string>;
+  inlineFontFaceUrls: Set<string>;
+} {
+  const inlineFontFaceUrls = extractInlineFontFaceUrls(strippedHtml);
+  const exemptUrls = new Set<string>(inlineFontFaceUrls);
   for (const url of extractPreloadFontUrls(strippedHtml)) exemptUrls.add(url);
-  for (const url of extractInlineFontFaceUrls(strippedHtml)) exemptUrls.add(url);
-  return exemptUrls;
+  return { exemptUrls, inlineFontFaceUrls };
+}
+
+/** Pushes `under-declared-faces` when this document's discovered face count is below the pinned
+ * `expectedFacesPerDocument` floor — see the module doc comment's BREAKING CHANGE section for
+ * exactly what "discovered" means (inline `@font-face` URLs union every font URL found while
+ * walking this document's own stylesheet graph, deep or exempt) and what this floor can and cannot
+ * see. Called unconditionally at every `processDocument` exit point that got far enough to have
+ * both sets, even when the document produced no other problem — a clean-but-empty document is
+ * precisely the vacuous-pass case this floor exists to close. */
+function checkFacesFloor(
+  htmlFile: string,
+  inlineFontFaceUrls: ReadonlySet<string>,
+  discoveredFaceUrls: ReadonlySet<string>,
+  expectedFacesPerDocument: number,
+  problems: FontChainProblem[],
+): void {
+  const allFaceUrls = new Set<string>(inlineFontFaceUrls);
+  for (const url of discoveredFaceUrls) allFaceUrls.add(url);
+  if (allFaceUrls.size >= expectedFacesPerDocument) return;
+  problems.push({
+    kind: 'under-declared-faces',
+    document: htmlFile,
+    count: allFaceUrls.size,
+    expected: expectedFacesPerDocument,
+    message:
+      `"${htmlFile}" has ${allFaceUrls.size} distinct discoverable font url(s) — its own inline ` +
+      '@font-face declarations plus every font url found while walking its own stylesheet graph — ' +
+      `expected at least ${expectedFacesPerDocument}. A document with fewer faces than expected, ` +
+      'including zero, is reported rather than treated as a pass: this is the anti-vacuity floor ' +
+      'closing the case where a template regression strips every font signal from a document and ' +
+      'this gate examines nothing for it, yet still reports ok: true.',
+  });
 }
 
 /**
@@ -731,7 +839,9 @@ function resolveStylesheetHref(
       kind: 'unresolvable-stylesheet',
       document,
       href,
-      message: `resolveStylesheet threw while resolving "${href}" in "${document}": ${String(error)}`,
+      message:
+        `resolveStylesheet threw while resolving "${sanitizeTagText(href)}" in ` +
+        `"${document}": ${sanitizeTagText(String(error))}`,
     });
     return undefined;
   }
@@ -742,8 +852,8 @@ function resolveStylesheetHref(
       document,
       href,
       message:
-        `stylesheet href "${href}" in "${document}" does not resolve to a file — cannot verify ` +
-        'whether it hides a font behind a nested parse.',
+        `stylesheet href "${sanitizeTagText(href)}" in "${document}" does not resolve to a ` +
+        'file — cannot verify whether it hides a font behind a nested parse.',
     });
   }
   return resolved;
@@ -762,6 +872,7 @@ function processDocument(
   htmlFile: string,
   resolveStylesheet: (href: string) => string | undefined,
   resolveImport: (specifier: string) => string | undefined,
+  expectedFacesPerDocument: number,
   problems: FontChainProblem[],
 ): void {
   let html: string;
@@ -804,7 +915,7 @@ function processDocument(
         'not be allowed to read as a clean pass just because nothing else was found.',
     });
   }
-  const exemptUrls = collectDocumentExemptUrls(strippedHtml.text);
+  const { exemptUrls, inlineFontFaceUrls } = collectDocumentSignals(strippedHtml.text);
   const { hrefs: stylesheetHrefs, malformedTags } = extractStylesheetHrefs(strippedHtml.text);
 
   // A `rel="stylesheet"` tag with no usable href is a build defect in its own right — reported
@@ -840,9 +951,17 @@ function processDocument(
           'as a pass. Did the build actually link this document to any CSS?',
       });
     }
+    // No stylesheet graph to walk, so the floor sees only this document's inline faces — still
+    // evaluated (see checkFacesFloor doc comment): a document with neither a stylesheet nor an
+    // inline face is exactly the "examined nothing, ok: true" shape this floor closes.
+    checkFacesFloor(htmlFile, inlineFontFaceUrls, new Set(), expectedFacesPerDocument, problems);
     return;
   }
 
+  // Shared across every stylesheet entry point this document has, so a document with several
+  // <link rel="stylesheet"> tags gets one combined discovered-face count, not one per entry (see
+  // WalkState.discoveredFaceUrls doc comment).
+  const discoveredFaceUrls = new Set<string>();
   for (const href of stylesheetHrefs) {
     const resolved = resolveStylesheetHref(htmlFile, href, resolveStylesheet, problems);
     if (resolved === undefined) continue;
@@ -854,9 +973,18 @@ function processDocument(
       resolveImport,
       exemptUrls,
       visited: new Set<string>(),
+      discoveredFaceUrls,
     };
     walk(state, resolved);
   }
+
+  checkFacesFloor(
+    htmlFile,
+    inlineFontFaceUrls,
+    discoveredFaceUrls,
+    expectedFacesPerDocument,
+    problems,
+  );
 }
 
 /**
@@ -865,7 +993,7 @@ function processDocument(
  * parsing does not handle.
  */
 export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChainResult {
-  const { htmlFiles, resolveStylesheet, resolveImport } = options;
+  const { htmlFiles, resolveStylesheet, resolveImport, expectedFacesPerDocument } = options;
 
   // Boundary validation (see ./errors.ts): a caller passing a non-string element in htmlFiles is a
   // contract violation and must crash loudly here, naming the index, rather than flow into
@@ -892,7 +1020,7 @@ export function verifyFontChain(options: VerifyFontChainOptions): VerifyFontChai
 
   const problems: FontChainProblem[] = [];
   for (const htmlFile of htmlFiles) {
-    processDocument(htmlFile, resolveStylesheet, resolveImport, problems);
+    processDocument(htmlFile, resolveStylesheet, resolveImport, expectedFacesPerDocument, problems);
   }
 
   return { ok: problems.length === 0, problems };

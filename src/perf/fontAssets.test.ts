@@ -326,6 +326,9 @@ describe('verifyFontAssets', () => {
       expect(problem.detail.includes('\n')).toBe(false);
       // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
       expect(/[\x00-\x1f\x7f]/.test(problem.detail)).toBe(false);
+      // Sanitization must ESCAPE, not destroy: the message still names the offending reference.
+      expect(problem.detail).toContain('\\n');
+      expect(problem.detail).toContain('/fonts/evil.woff2');
     }
 
     // unresolvable-font
@@ -341,6 +344,8 @@ describe('verifyFontAssets', () => {
       expect(problem.detail.includes('\n')).toBe(false);
       // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
       expect(/[\x00-\x1f\x7f]/.test(problem.detail)).toBe(false);
+      expect(problem.detail).toContain('\\n');
+      expect(problem.detail).toContain('/fonts/evil.woff2');
     }
 
     // outside-font-root: reference itself carries the payload past containment
@@ -360,6 +365,8 @@ describe('verifyFontAssets', () => {
       expect(outsideProblem.detail.includes('\n')).toBe(false);
       // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
       expect(/[\x00-\x1f\x7f]/.test(outsideProblem.detail)).toBe(false);
+      expect(outsideProblem.detail).toContain('\\n');
+      expect(outsideProblem.detail).toContain('/fonts/evil.woff2');
     }
   });
 
@@ -388,6 +395,9 @@ describe('verifyFontAssets', () => {
       expect(warning.detail.includes('\n')).toBe(false);
       // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
       expect(/[\x00-\x1f\x7f]/.test(warning.detail)).toBe(false);
+      // Sanitization must ESCAPE, not destroy: the message still names the offending file.
+      expect(warning.detail).toContain('orphan');
+      expect(warning.detail).toContain('evil.woff2');
     }
   });
 
@@ -459,6 +469,46 @@ describe('verifyFontAssets', () => {
         file: join(fontRoot, 'orphan.woff2'),
       }),
     ]);
+  });
+
+  it('FINDING 2: warns unreadable-font-root (not silence) when fontRoot exists but cannot be scanned — ENOTDIR, deterministic everywhere (a chmod 000 fixture is not: it passes trivially as root and varies across CI)', () => {
+    // Pointing fontRoot at a FILE makes readdirSync throw ENOTDIR — the same non-ENOENT class as
+    // EACCES on a real, unreadable directory, without relying on filesystem permissions at all.
+    const fileAsFontRoot = write('not-a-directory.woff2', 'this is a file, not a directory');
+    const css = write('main.css', '@font-face { src: url(/fonts/anything.woff2); }');
+
+    const result = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: ['/fonts/anything.woff2'],
+      resolveHref: () => undefined,
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot: fileAsFontRoot,
+    });
+
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ kind: 'unreadable-font-root', file: fileAsFontRoot }),
+    ]);
+    const warning = result.warnings[0];
+    expect(warning).toBeDefined();
+    if (warning !== undefined) {
+      expect(warning.detail).toContain(fileAsFontRoot);
+      // Never affects ok/problems — this stays a warning, per this module's severity convention.
+    }
+  });
+
+  it('FINDING 2: a genuinely missing fontRoot still returns quietly — no orphan-scan warning (the ENOENT path)', () => {
+    const missingFontRoot = join(root, 'does-not-exist-dir');
+    const css = write('main.css', '@font-face { src: url(/fonts/anything.woff2); }');
+
+    const result = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: ['/fonts/anything.woff2'],
+      resolveHref: () => undefined,
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot: missingFontRoot,
+    });
+
+    expect(result.warnings).toEqual([]);
   });
 
   it('reports empty-input for an empty sourceFiles list', () => {

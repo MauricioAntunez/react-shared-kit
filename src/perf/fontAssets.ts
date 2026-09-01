@@ -124,7 +124,7 @@ export type FontAssetsProblem =
   | { kind: 'missing-checksum'; reference: string; file: string; detail: string }
   | { kind: 'checksum-mismatch'; reference: string; file: string; detail: string };
 
-export type FontAssetsWarningKind = 'orphan-font-file';
+export type FontAssetsWarningKind = 'orphan-font-file' | 'unreadable-font-root';
 
 export interface FontAssetsWarning {
   kind: FontAssetsWarningKind;
@@ -358,6 +358,20 @@ function checkFontFile(
   if (checksums !== undefined) checkChecksum(reference, file, checksums, problems);
 }
 
+/** Narrows a caught `unknown` error to "this is Node's ENOENT" without `any` — the only
+ * distinction `checkOrphans` is entitled to make (per this module's convention, see the module
+ * doc comment: a `try` reports what the fs call raises, it does not classify errors in general).
+ * Anything else (EACCES, ENOTDIR, …) is a real, actionable fact about `fontRoot` and must not be
+ * swallowed alongside "the directory simply doesn't exist". */
+function isEnoent(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === 'ENOENT'
+  );
+}
+
 /** Warns (never fails) about a `.woff2` file under `fontRoot` that no resolved reference points
  * at — an orphan wastes repo space but breaks nothing, the same severity call web-usa's own
  * script makes. `resolvedFiles` holds every SUCCESSFULLY resolved-and-contained font path, so a
@@ -371,9 +385,23 @@ function checkOrphans(
   let entries: string[];
   try {
     entries = readdirSync(fontRoot);
-  } catch {
-    // A missing fontRoot is not this check's concern — every referenced font already failed its
-    // own existence check above if the directory is absent.
+  } catch (error) {
+    if (isEnoent(error)) {
+      // A missing fontRoot is not this check's concern — every referenced font already failed
+      // its own existence check above if the directory is absent.
+      return;
+    }
+    // Anything else (EACCES on an existing directory, ENOTDIR, …) means the orphan scan could
+    // not run at all — a directory that DOES exist and DOES hold orphaned files produces zero
+    // signal if this is swallowed the same way as ENOENT. Warn, naming the directory and error,
+    // so the silence itself is visible instead of indistinguishable from "nothing to report".
+    warnings.push({
+      kind: 'unreadable-font-root',
+      file: fontRoot,
+      detail:
+        `"${sanitizeTagText(fontRoot)}" could not be scanned for orphan font files: ` +
+        sanitizeTagText(String(error)),
+    });
     return;
   }
   for (const entry of entries) {
