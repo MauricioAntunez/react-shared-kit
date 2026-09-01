@@ -30,6 +30,66 @@ import { stripComments, stripHtmlComments } from './text.ts';
  * aggregation is used for anything else, so `under-declared-faces` never depends on what other
  * documents declare.
  *
+ * PER-DOCUMENT ATTRIBUTION OF `cssFiles` FACES (PR #8 FULL-review finding, 2026-09-01): the fix
+ * above closed the hole for INLINE faces, but a second, distinct hole survived in the `cssFiles`
+ * path — reproduced against this exact module. `cssFaceUrls` used to be a single build-wide union
+ * over every `cssFiles` entry, merged into EVERY document's face set with no check that the
+ * document actually links that stylesheet. Two documents sharing one bundled chunk, one of them
+ * losing its OWN signal (its `<link rel="stylesheet">` for that chunk, its inline `<style>`, or
+ * both) while carrying copy-pasted preload boilerplate for the chunk's faces regardless: the union
+ * still satisfied the per-document floor for the broken document, because the floor was being fed
+ * faces the document never actually declared. The floor is only as correct as the attribution
+ * feeding it — a per-document ASSERTION over a build-wide UNION is not a per-document guarantee.
+ *
+ * Fixed the same way `verifyFontChain` already does it (see that module's `resolveStylesheet` /
+ * `extractStylesheetHrefs` precedent): a `cssFiles` entry's faces are attributed to a document ONLY
+ * when that document carries a `<link rel="stylesheet">` whose `href`, resolved through the same
+ * `resolveHref` this module already requires, names that exact `cssFiles` entry. A document's face
+ * set is now `inline @font-face faces ∪ faces of cssFiles entries it actually links` — never a
+ * global union. Three edge cases this creates, decided and tested here (`fontPreload.test.ts`):
+ *   - An entry in `cssFiles` no document links (a dead/orphan chunk) produces NO problem of its
+ *     own. Its faces still go through `resolveDistinctFaceUrls` (so `unresolvable-font-file` /
+ *     `face-without-woff2` still fire if it is malformed), but preload PAIRING never runs for its
+ *     URLs, because no document's attributed face set ever includes them. This is a deliberate
+ *     scope limit, not an oversight: "is every built CSS chunk referenced by some document" is a
+ *     bundler/dead-code question, not a per-document preload-correctness question, which is what
+ *     this gate exists to answer.
+ *   - A document linking a stylesheet whose resolved path is NOT among `cssFiles` produces
+ *     `unscanned-stylesheet`, visibly — it does NOT silently contribute zero faces as if the link
+ *     were absent. This gate cannot verify faces it was never given the file to scan; `cssFiles` is
+ *     expected to enumerate the CSS this gate should treat as authoritative for `@font-face`, and a
+ *     linked stylesheet missing from that list is either an incomplete `cssFiles` argument or a
+ *     stylesheet this gate has no way to vouch for. Either way the consumer is told, not left to
+ *     assume a clean pass. (A stylesheet `href` that does not RESOLVE at all — `resolveHref` throws
+ *     or returns `undefined` — is reported as `resolver-threw` or silently excluded respectively;
+ *     an unresolvable stylesheet reference is `verifyFontChain`'s `unresolvable-stylesheet` to
+ *     catch, not duplicated here, to avoid two gates disagreeing about the same broken `href`.)
+ *
+ *   `expectedFacesPerDocument` IS A COUNT FLOOR, NOT A CONTENT ASSERTION — the one thing it cannot
+ *   see, stated here so a green result is not read as more than it is. It answers "does this
+ *   document declare at least N distinct faces", never "are they the RIGHT N". Verified against
+ *   this module: two documents both linking a two-face chunk, one of them additionally declaring a
+ *   third face inline — pin the floor at 2 and the loss of that third face is INVISIBLE, because
+ *   the survivors still clear 2; pin it at 3, the number that document genuinely expects, and the
+ *   same loss is reported. So pin it to what the RICHEST document declares, not to the smallest
+ *   number every document happens to satisfy. Equally, a document swapping one face for a duplicate
+ *   of another keeps its count and passes; catching that needs a per-document expected SET, which
+ *   this gate deliberately does not take — the expected set differs per route in every consumer
+ *   architecture examined, and a per-document set argument nobody maintains decays into a rubber
+ *   stamp faster than a count nobody has to. A template regression removing the SAME face from
+ *   EVERY document is outside this floor's reach for the same reason: every document falls
+ *   together, so none is anomalous relative to the pinned number. `verifyFontChain` and a browser
+ *   sweep cover that case; this gate is necessary, not sufficient.
+ *   - `cssFiles: []` with every face declared inline is unaffected by any of the above: with no
+ *     `cssFiles` entries there is nothing to attribute and nothing to mismatch against, so a
+ *     document's face set is exactly its inline faces, exactly as before this fix.
+ * Residual limit, stated plainly rather than overclaimed: this still trusts `resolveHref` to
+ * resolve a stylesheet `href` to the SAME path string used as a `cssFiles` entry. A resolver that
+ * returns two different-but-equivalent paths for what is really the same file (say, a symlink and
+ * its target) defeats the string-equality match and reads as `unscanned-stylesheet`. That is a
+ * resolver-consistency requirement this module cannot itself verify — same trust boundary the
+ * module already places on every other `resolveHref` call.
+ *
  * TWO VIEWS OF THE SAME HTML DOCUMENT, deliberately different:
  *   - Hunting `<link>` TAGS (this gate never reads inline CSS as markup) uses
  *     `stripHtmlComments(html, { blankStyleBodies: true })` — a `<link rel="preload" as="font"
@@ -87,7 +147,8 @@ export type FontPreloadProblemKind =
   | 'font-preload-unpaired'
   | 'font-preload-duplicate'
   | 'oversized-url'
-  | 'unterminated-html-comment';
+  | 'unterminated-html-comment'
+  | 'unscanned-stylesheet';
 
 export type FontPreloadProblem =
   | { kind: 'empty-input'; detail: string }
@@ -116,7 +177,8 @@ export type FontPreloadProblem =
   | { kind: 'font-preload-unpaired'; html: string; href: string; count: number; detail: string }
   | { kind: 'font-preload-duplicate'; html: string; href: string; count: number; detail: string }
   | { kind: 'oversized-url'; source: string; excerpt: string; detail: string }
-  | { kind: 'unterminated-html-comment'; html: string; detail: string };
+  | { kind: 'unterminated-html-comment'; html: string; detail: string }
+  | { kind: 'unscanned-stylesheet'; html: string; href: string; detail: string };
 
 export interface VerifyFontPreloadOptions {
   /** Built HTML files to check for preload tags and inline `@font-face`. */
@@ -269,6 +331,97 @@ function readCssFaces(cssFiles: string[], problems: FontPreloadProblem[]): Decla
   return faces;
 }
 
+/** Groups already-collected `DeclaredFace`s by their `source` (a `cssFiles` entry's own path) —
+ * how `attributeLinkedCssFaces` looks up "faces belonging to THIS resolved stylesheet path". */
+function groupFacesBySource(faces: readonly DeclaredFace[]): Map<string, DeclaredFace[]> {
+  const bySource = new Map<string, DeclaredFace[]>();
+  for (const face of faces) {
+    const existing = bySource.get(face.source);
+    if (existing === undefined) bySource.set(face.source, [face]);
+    else existing.push(face);
+  }
+  return bySource;
+}
+
+/** `href` values off every well-formed `<link rel="stylesheet" href="...">` in the BLANKED
+ * document view (see module doc comment for why the blanked view is used for tag hunting). Mirrors
+ * `fontChain.ts`'s `extractStylesheetHrefs`, narrowed to just the hrefs — a malformed
+ * `rel="stylesheet"` tag with no usable `href` is that module's problem to report, not this one's;
+ * duplicating it here would have two gates disagreeing about the same defect. */
+function stylesheetHrefs(blankedHtml: string): string[] {
+  const hrefs: string[] = [];
+  for (const match of blankedHtml.matchAll(/<link\b[^>]*>/gi)) {
+    const tag = match[0];
+    const rel = attr(tag, 'rel');
+    if (rel === undefined || !/\bstylesheet\b/i.test(rel)) continue;
+    const href = attr(tag, 'href');
+    if (href !== undefined) hrefs.push(href);
+  }
+  return hrefs;
+}
+
+/** Resolves one stylesheet `href` via the shared `resolveHref`, reporting `resolver-threw` on a
+ * throw. Returns `undefined` both when the resolver throws (already reported) and when it
+ * legitimately returns `undefined` (an unresolvable stylesheet reference — `verifyFontChain`'s
+ * `unresolvable-stylesheet` is the gate that reports that; see module doc comment) — the caller
+ * cannot attribute any faces either way and does not need to tell the two apart further. */
+function resolveStylesheetHref(
+  doc: HtmlDoc,
+  href: string,
+  resolveHref: (href: string) => string | undefined,
+  problems: FontPreloadProblem[],
+): string | undefined {
+  let target: string | undefined;
+  try {
+    target = resolveHref(href);
+  } catch (error) {
+    problems.push({
+      kind: 'resolver-threw',
+      source: doc.file,
+      href,
+      detail: `resolveHref threw while resolving stylesheet "${sanitizeTagText(href)}" linked from "${doc.file}": ${String(error)}`,
+    });
+    return undefined;
+  }
+  assertResolverReturn(target, 'resolveHref', href);
+  return target;
+}
+
+/** A document's face set from `cssFiles`: ONLY the faces of stylesheets this document actually
+ * links via `<link rel="stylesheet">` — never every `cssFiles` entry unconditionally (that was the
+ * PR #8 CRITICAL finding; see module doc comment). A linked stylesheet that resolves to a path NOT
+ * present in `cssFiles` is reported as `unscanned-stylesheet`, visibly, rather than silently
+ * contributing zero faces. */
+function attributeLinkedCssFaces(
+  doc: HtmlDoc,
+  cssFacesBySource: ReadonlyMap<string, DeclaredFace[]>,
+  resolveHref: (href: string) => string | undefined,
+  problems: FontPreloadProblem[],
+): Set<string> {
+  const attributed = new Set<string>();
+  for (const href of stylesheetHrefs(doc.blanked)) {
+    const target = resolveStylesheetHref(doc, href, resolveHref, problems);
+    if (target === undefined) continue;
+    const faces = cssFacesBySource.get(target);
+    if (faces === undefined) {
+      problems.push({
+        kind: 'unscanned-stylesheet',
+        html: doc.file,
+        href,
+        detail:
+          `"${doc.file}" links stylesheet "${sanitizeTagText(href)}", resolved to a file not ` +
+          'present in cssFiles — this gate cannot verify faces it may declare; add it to ' +
+          'cssFiles, or confirm it declares no @font-face',
+      });
+      continue;
+    }
+    for (const face of faces) {
+      if (face.woff2 !== undefined) attributed.add(face.woff2);
+    }
+  }
+  return attributed;
+}
+
 /** Resolves every DISTINCT woff2 URL exactly once (a face may be redeclared verbatim across
  * documents/chunks), reporting `resolver-threw` / `unresolvable-font-file` against the first
  * source that declared it. Returns the set of URLs that resolved. */
@@ -294,7 +447,7 @@ function resolveDistinctFaceUrls(
         kind: 'resolver-threw',
         source,
         href,
-        detail: `resolveHref threw while resolving "${href}": ${String(error)}`,
+        detail: `resolveHref threw while resolving "${sanitizeTagText(href)}": ${String(error)}`,
       });
       continue;
     }
@@ -304,7 +457,7 @@ function resolveDistinctFaceUrls(
         kind: 'unresolvable-font-file',
         source,
         href,
-        detail: `font face url "${href}" declared in "${source}" did not resolve to a file`,
+        detail: `font face url "${sanitizeTagText(href)}" declared in "${source}" did not resolve to a file`,
       });
       continue;
     }
@@ -371,7 +524,7 @@ function reportUnusablePreload(
       html: htmlFile,
       href: tag.href,
       crossorigin: tag.crossorigin,
-      detail: `"${htmlFile}" preloads "${tag.href}" with crossorigin ${
+      detail: `"${htmlFile}" preloads "${sanitizeTagText(tag.href)}" with crossorigin ${
         tag.crossorigin === undefined ? '(absent)' : sanitizeTagText(tag.crossorigin)
       }, not anonymous — a different fetch cache key than the @font-face request, so the file downloads twice`,
     });
@@ -382,7 +535,7 @@ function reportUnusablePreload(
       html: htmlFile,
       href: tag.href,
       type: tag.type,
-      detail: `"${htmlFile}" preloads "${tag.href}" with type ${
+      detail: `"${htmlFile}" preloads "${sanitizeTagText(tag.href)}" with type ${
         tag.type === undefined ? '(absent)' : sanitizeTagText(tag.type)
       }, not font/woff2 — the browser may skip the preload`,
     });
@@ -406,7 +559,7 @@ function checkPreloadPairing(
         kind: 'font-preload-missing',
         html: htmlFile,
         href,
-        detail: `"${htmlFile}" declares @font-face src "${href}" with no matching preload`,
+        detail: `"${htmlFile}" declares @font-face src "${sanitizeTagText(href)}" with no matching preload`,
       });
       continue;
     }
@@ -420,7 +573,7 @@ function checkPreloadPairing(
         html: htmlFile,
         href,
         count: matches.length,
-        detail: `"${htmlFile}" preloads "${href}", which no @font-face declares (${matches.length} tag(s))`,
+        detail: `"${htmlFile}" preloads "${sanitizeTagText(href)}", which no @font-face declares (${matches.length} tag(s))`,
       });
     }
     if (matches.length > 1) {
@@ -429,7 +582,7 @@ function checkPreloadPairing(
         html: htmlFile,
         href,
         count: matches.length,
-        detail: `"${htmlFile}" has ${matches.length} preload tags for the same href "${href}"`,
+        detail: `"${htmlFile}" has ${matches.length} preload tags for the same href "${sanitizeTagText(href)}"`,
       });
     }
   }
@@ -440,13 +593,13 @@ function checkPreloadPairing(
 function checkDocument(
   doc: HtmlDoc,
   inlineFaces: DeclaredFace[],
-  cssFaceUrls: ReadonlySet<string>,
+  linkedCssFaceUrls: ReadonlySet<string>,
   resolvedUrls: ReadonlySet<string>,
   expectedFacesPerDocument: number,
   problems: FontPreloadProblem[],
 ): void {
   const documentFaceUrls = new Set<string>();
-  for (const url of cssFaceUrls) {
+  for (const url of linkedCssFaceUrls) {
     if (resolvedUrls.has(url)) documentFaceUrls.add(url);
   }
   for (const face of inlineFaces) {
@@ -495,15 +648,14 @@ export function verifyFontPreload(options: VerifyFontPreloadOptions): VerifyFont
   }
 
   const resolvedUrls = resolveDistinctFaceUrls(allFaces, resolveHref, problems);
-  const cssFaceUrls = new Set(
-    cssFaces.flatMap((face) => (face.woff2 !== undefined ? [face.woff2] : [])),
-  );
+  const cssFacesBySource = groupFacesBySource(cssFaces);
 
   for (const doc of docs) {
+    const linkedCssFaceUrls = attributeLinkedCssFaces(doc, cssFacesBySource, resolveHref, problems);
     checkDocument(
       doc,
       inlineFacesByDoc.get(doc.file) ?? [],
-      cssFaceUrls,
+      linkedCssFaceUrls,
       resolvedUrls,
       expectedFacesPerDocument,
       problems,

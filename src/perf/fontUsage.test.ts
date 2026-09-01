@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   findUnshippedFontUsage,
+  type NormalizedFamily,
   normalizeFamily,
   type ObservedElement,
   parseFontFaces,
   type ShippedFace,
+  shipsFamily,
   shipsWeight,
 } from './fontUsage.ts';
 
@@ -59,27 +61,60 @@ describe('parseFontFaces', () => {
 });
 
 describe('shipsWeight', () => {
-  const faces: ShippedFace[] = [{ family: 'inter', weightMin: 400, weightMax: 700 }];
+  const inter = normalizeFamily('inter');
+  const faces: ShippedFace[] = [{ family: inter, weightMin: 400, weightMax: 700 }];
 
   it('is true at exactly weightMin', () => {
-    expect(shipsWeight('inter', 400, faces)).toBe(true);
+    expect(shipsWeight(inter, 400, faces)).toBe(true);
   });
 
   it('is true at exactly weightMax', () => {
-    expect(shipsWeight('inter', 700, faces)).toBe(true);
+    expect(shipsWeight(inter, 700, faces)).toBe(true);
   });
 
   it('is false just below weightMin', () => {
-    expect(shipsWeight('inter', 399, faces)).toBe(false);
+    expect(shipsWeight(inter, 399, faces)).toBe(false);
   });
 
   it('is false just above weightMax', () => {
-    expect(shipsWeight('inter', 701, faces)).toBe(false);
+    expect(shipsWeight(inter, 701, faces)).toBe(false);
+  });
+
+  it('is false for every weight when weightMin > weightMax (hand-constructed inverted range)', () => {
+    const inverted: ShippedFace[] = [{ family: inter, weightMin: 700, weightMax: 400 }];
+    expect(shipsWeight(inter, 400, inverted)).toBe(false);
+    expect(shipsWeight(inter, 550, inverted)).toBe(false);
+    expect(shipsWeight(inter, 700, inverted)).toBe(false);
+  });
+});
+
+describe('NormalizedFamily brand', () => {
+  const faces: ShippedFace[] = [
+    { family: normalizeFamily('Instrument Sans'), weightMin: 400, weightMax: 700 },
+  ];
+
+  it('rejects a raw string passed to shipsFamily — proves the brand is enforced at compile time', () => {
+    // @ts-expect-error — shipsFamily requires NormalizedFamily; a raw string must not type-check
+    // (this is the whole point of Finding 1: an un-normalised family used to compile silently).
+    shipsFamily('Instrument Sans', faces);
+  });
+
+  it('rejects a raw string passed to shipsWeight — proves the brand is enforced at compile time', () => {
+    // @ts-expect-error — shipsWeight requires NormalizedFamily; a raw string must not type-check.
+    shipsWeight('Instrument Sans', 400, faces);
+  });
+
+  it('accepts normalizeFamily output in both predicates — the positive path still compiles and works', () => {
+    const family: NormalizedFamily = normalizeFamily('Instrument Sans');
+    expect(shipsFamily(family, faces)).toBe(true);
+    expect(shipsWeight(family, 400, faces)).toBe(true);
   });
 });
 
 describe('findUnshippedFontUsage', () => {
-  const faces: ShippedFace[] = [{ family: 'instrument sans', weightMin: 400, weightMax: 400 }];
+  const faces: ShippedFace[] = [
+    { family: normalizeFamily('instrument sans'), weightMin: 400, weightMax: 400 },
+  ];
 
   it('is not a violation for an element in a family this build ships nothing for', () => {
     const elements: ObservedElement[] = [

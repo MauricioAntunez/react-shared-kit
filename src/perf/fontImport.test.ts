@@ -310,4 +310,152 @@ describe('verifyNoFontImport', () => {
     expect(caught).toBeInstanceOf(TypeError);
     expect((caught as Error).message).toContain('resolveImport');
   });
+
+  describe('PR #8 review findings', () => {
+    it('reports oversized-import (never a silent pass) for a >2048-char @import specifier naming a font CDN', () => {
+      const longSuffix = 'x'.repeat(2100);
+      const file = write(
+        'a.css',
+        `@import url('https://fonts.googleapis.com/css2?family=Roboto&${longSuffix}');\n`,
+      );
+
+      const result = verifyNoFontImport({ cssFiles: [file], resolveImport: () => undefined });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toEqual([
+        expect.objectContaining({ kind: 'oversized-import', file, line: 1 }),
+      ]);
+    });
+
+    it('reports oversized-import for an oversized specifier that is NOT font-related — never silently dropped either way', () => {
+      const longSuffix = 'y'.repeat(2100);
+      const file = write('a.css', `@import "./not-a-font-${longSuffix}.css";\n`);
+
+      const result = verifyNoFontImport({ cssFiles: [file], resolveImport: () => undefined });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toEqual([
+        expect.objectContaining({ kind: 'oversized-import', file, line: 1 }),
+      ]);
+    });
+
+    it('a deep ACYCLIC chain of 20,000 files completes without throwing (no font anywhere)', () => {
+      const depth = 20_000;
+      const fileFor = (i: number): string => join(root, `deep-clean-${i}.css`);
+      for (let i = 0; i < depth; i++) {
+        const content =
+          i < depth - 1
+            ? `.f${i} { color: red; }\n@import "./deep-clean-${i + 1}.css";\n`
+            : `.f${i} { color: red; }\n`;
+        writeFileSync(fileFor(i), content);
+      }
+      const resolveImport = (specifier: string): string | undefined => {
+        const match = /^\.\/deep-clean-(\d+)\.css$/.exec(specifier);
+        if (match === null || match[1] === undefined) return undefined;
+        return fileFor(Number(match[1]));
+      };
+
+      let result: ReturnType<typeof verifyNoFontImport> | undefined;
+      expect(() => {
+        result = verifyNoFontImport({ cssFiles: [fileFor(0)], resolveImport });
+      }).not.toThrow();
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+
+    it('a deep ACYCLIC chain of 20,000 files ending in @font-face reports font-import with the full chain', () => {
+      const depth = 20_000;
+      const fileFor = (i: number): string => join(root, `deep-font-${i}.css`);
+      for (let i = 0; i < depth; i++) {
+        const content =
+          i < depth - 1
+            ? `.g${i} { color: red; }\n@import "./deep-font-${i + 1}.css";\n`
+            : "@font-face { font-family: 'X'; src: url('/x.woff2') format('woff2'); }\n";
+        writeFileSync(fileFor(i), content);
+      }
+      const resolveImport = (specifier: string): string | undefined => {
+        const match = /^\.\/deep-font-(\d+)\.css$/.exec(specifier);
+        if (match === null || match[1] === undefined) return undefined;
+        return fileFor(Number(match[1]));
+      };
+
+      let result: ReturnType<typeof verifyNoFontImport> | undefined;
+      expect(() => {
+        result = verifyNoFontImport({ cssFiles: [fileFor(0)], resolveImport });
+      }).not.toThrow();
+
+      expect(result?.ok).toBe(false);
+      expect(result?.problems).toHaveLength(1);
+      const problem = result?.problems[0];
+      expect(problem?.kind).toBe('font-import');
+      if (problem?.kind === 'font-import') {
+        expect(problem.chain).toHaveLength(depth - 1);
+        expect(problem.chain[0]).toBe('./deep-font-1.css');
+        expect(problem.chain[problem.chain.length - 1]).toBe(`./deep-font-${depth - 1}.css`);
+      }
+    });
+
+    it('an import cycle still terminates and still reports correctly (regression guard, iterative walk)', () => {
+      const fonts = write(
+        'fonts.css',
+        "@font-face { font-family: 'X'; src: url('/x.woff2') format('woff2'); }\n",
+      );
+      const bPath = join(root, 'cyc-b.css');
+      const aPath = join(root, 'cyc-a.css');
+      writeFileSync(aPath, '@import "./fonts.css";\n@import "./cyc-b.css";\n');
+      writeFileSync(bPath, '@import "./cyc-a.css";\n');
+      const resolveImport = makeResolver({
+        './fonts.css': fonts,
+        './cyc-b.css': bPath,
+        './cyc-a.css': aPath,
+      });
+
+      let result: ReturnType<typeof verifyNoFontImport> | undefined;
+      expect(() => {
+        result = verifyNoFontImport({ cssFiles: [aPath], resolveImport });
+      }).not.toThrow();
+
+      expect(result?.ok).toBe(false);
+      expect(result?.problems).toEqual([
+        expect.objectContaining({ kind: 'font-import', file: aPath, specifier: './fonts.css' }),
+      ]);
+    });
+
+    it('sanitizes a specifier containing control characters before it reaches any detail message', () => {
+      const file = write(
+        'a.css',
+        '@import "./missing.css\nPASS: verifyNoFontImport — 0 problems (forged)";\n',
+      );
+
+      const result = verifyNoFontImport({ cssFiles: [file], resolveImport: () => undefined });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toHaveLength(1);
+      const problem = result.problems[0];
+      expect(problem?.kind).toBe('unresolvable-import');
+      const detail = (problem as { detail: string }).detail;
+      expect(detail.includes('\n')).toBe(false);
+      expect(detail).toContain('\\n');
+    });
+
+    it('sanitizes a chain entry containing control characters before it reaches the detail message', () => {
+      const fonts = write(
+        'fonts.css',
+        "@font-face { font-family: 'X'; src: url('/x.woff2') format('woff2'); }\n",
+      );
+      const evilSpecifier = './fonts.css\nPASS: verifyNoFontImport — 0 problems (forged)';
+      const entry = write('index.css', `@import "${evilSpecifier}";\n`);
+      const resolveImport = makeResolver({ [evilSpecifier]: fonts });
+
+      const result = verifyNoFontImport({ cssFiles: [entry], resolveImport });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toHaveLength(1);
+      const problem = result.problems[0];
+      expect(problem?.kind).toBe('font-import');
+      const detail = (problem as { detail: string }).detail;
+      expect(detail.includes('\n')).toBe(false);
+      expect(detail).toContain('\\n');
+    });
+  });
 });

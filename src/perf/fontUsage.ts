@@ -91,11 +91,23 @@ import { stripComments } from './text.ts';
  * budget) that a caller must distinguish — that does not apply here.
  */
 
+/** A family name that has been run through `normalizeFamily` — trimmed, unquoted, lowercased.
+ * Constructed ONLY by `normalizeFamily`; there is no other way to produce one. Exists so
+ * `ShippedFace.family` and the `family` parameters of `shipsFamily`/`shipsWeight` cannot silently
+ * accept a raw, un-normalised string (see the module doc comment's normalisation-mismatch
+ * warning) — the compiler now enforces what used to be prose only. `ObservedElement.family` is
+ * deliberately NOT this type: it is raw browser output and must be normalised before comparison,
+ * never assumed pre-normalised. */
+export type NormalizedFamily = string & { readonly __brand: 'NormalizedFamily' };
+
 /** One `@font-face` this build ships, reduced to what coverage needs: the normalised family name
  * (see `normalizeFamily`) and the weight range it covers (`weightMin === weightMax` for a
- * single-value `font-weight`). */
+ * single-value `font-weight`). INVARIANT: `weightMin <= weightMax`. `parseFontFaces` always
+ * upholds it (it derives both from `Math.min`/`Math.max` over the same non-empty number list), but
+ * this interface is public and the module doc comment explicitly invites hand-constructed faces —
+ * `shipsWeight` guards against a caller violating it (see its own doc comment). */
 export interface ShippedFace {
-  family: string;
+  family: NormalizedFamily;
   weightMin: number;
   weightMax: number;
 }
@@ -125,12 +137,12 @@ export interface FontUsageViolation {
  * again, ASCII-lowercase. Both the shipped set and every observed value MUST be run through this
  * SAME function — see the module doc comment for why a mismatch silently defeats a same-family
  * match. */
-export function normalizeFamily(family: string): string {
+export function normalizeFamily(family: string): NormalizedFamily {
   return family
     .trim()
     .replace(/^['"]|['"]$/g, '')
     .trim()
-    .toLowerCase();
+    .toLowerCase() as NormalizedFamily;
 }
 
 /** One `@font-face` block body's parsed `family`/`weightMin`/`weightMax`, or `undefined` when the
@@ -169,18 +181,29 @@ export function parseFontFaces(css: string): ShippedFace[] {
 
 /** Is `family` (already normalised) one this build ships ANY face for? A family we ship nothing
  * for is never a violation, regardless of weight — it is not ours to ship. */
-export function shipsFamily(family: string, faces: readonly ShippedFace[]): boolean {
+export function shipsFamily(family: NormalizedFamily, faces: readonly ShippedFace[]): boolean {
   return faces.some((f) => f.family === family);
 }
 
 /** Does some shipped face for `family` (already normalised) cover `weight`, inclusive at both
- * `weightMin` and `weightMax`? */
+ * `weightMin` and `weightMax`? Guards `f.weightMin <= f.weightMax` before testing the range: a
+ * hand-constructed `ShippedFace` (the module doc comment explicitly invites those) with an
+ * inverted range describes an empty interval, so it covers nothing — that is the documented,
+ * intentional result of the guard, not a bug to fix by throwing (a pure predicate should not
+ * throw) or by adding a second branded type (rejected: disproportionate for a range only
+ * hand-built input can invert). */
 export function shipsWeight(
-  family: string,
+  family: NormalizedFamily,
   weight: number,
   faces: readonly ShippedFace[],
 ): boolean {
-  return faces.some((f) => f.family === family && weight >= f.weightMin && weight <= f.weightMax);
+  return faces.some(
+    (f) =>
+      f.family === family &&
+      f.weightMin <= f.weightMax &&
+      weight >= f.weightMin &&
+      weight <= f.weightMax,
+  );
 }
 
 /** One violation, formatted for CI output — every built-page-derived field sanitised

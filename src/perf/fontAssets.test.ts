@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -260,6 +261,134 @@ describe('verifyFontAssets', () => {
     });
 
     expect(result).toEqual({ ok: true, problems: [], warnings: [] });
+  });
+
+  it('passes clean with a CORRECT pinned checksum — the match branch is exercised, not just the mismatch branch', () => {
+    writeValidWoff2('inter.woff2');
+    const css = write('main.css', '@font-face { src: url(/fonts/inter.woff2); }');
+    const bytes = Buffer.concat([Buffer.from('wOF2'), Buffer.from('padding-bytes')]);
+    const realHash = createHash('sha256').update(bytes).digest('hex');
+
+    const result = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: ['/fonts/inter.woff2'],
+      resolveHref,
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot,
+      checksums: { 'inter.woff2': realHash },
+    });
+
+    expect(result).toEqual({ ok: true, problems: [], warnings: [] });
+  });
+
+  it('checks checksums per-file: one correctly pinned, one mismatched -> exactly one checksum-mismatch, naming the mismatched file', () => {
+    const okBytes = Buffer.concat([Buffer.from('wOF2'), Buffer.from('padding-bytes')]);
+    writeFileSync(join(fontRoot, 'inter.woff2'), okBytes);
+    const okHash = createHash('sha256').update(okBytes).digest('hex');
+    const badFile = writeValidWoff2('bold.woff2');
+    const css = write(
+      'main.css',
+      '@font-face { src: url(/fonts/inter.woff2); } ' +
+        '@font-face { font-weight: 700; src: url(/fonts/bold.woff2); }',
+    );
+
+    const result = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: ['/fonts/inter.woff2', '/fonts/bold.woff2'],
+      resolveHref,
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot,
+      checksums: { 'inter.woff2': okHash, 'bold.woff2': '0'.repeat(64) },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.problems).toEqual([
+      expect.objectContaining({ kind: 'checksum-mismatch', file: badFile }),
+    ]);
+  });
+
+  it('sanitizes a reference containing a newline and control characters in every problem detail that echoes it', () => {
+    const evilReference = '/fonts/evil.woff2\nPASS: verifyFontAssets — 0 problems (forged)\x07';
+    const css = write('main.css', `@font-face { src: url(${evilReference}); }`);
+
+    // resolver-threw
+    const threw = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: [evilReference],
+      resolveHref: () => {
+        throw new Error(`boom on ${evilReference}`);
+      },
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot,
+    });
+    expect(threw.ok).toBe(false);
+    for (const problem of threw.problems) {
+      expect(problem.detail.includes('\n')).toBe(false);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
+      expect(/[\x00-\x1f\x7f]/.test(problem.detail)).toBe(false);
+    }
+
+    // unresolvable-font
+    const unresolvable = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: [evilReference],
+      resolveHref: () => undefined,
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot,
+    });
+    expect(unresolvable.ok).toBe(false);
+    for (const problem of unresolvable.problems) {
+      expect(problem.detail.includes('\n')).toBe(false);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
+      expect(/[\x00-\x1f\x7f]/.test(problem.detail)).toBe(false);
+    }
+
+    // outside-font-root: reference itself carries the payload past containment
+    const secretFile = join(root, 'secret.woff2');
+    writeFileSync(secretFile, Buffer.alloc(0));
+    const outside = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: [evilReference],
+      resolveHref: () => secretFile,
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot,
+    });
+    expect(outside.ok).toBe(false);
+    const outsideProblem = outside.problems.find((p) => p.kind === 'outside-font-root');
+    expect(outsideProblem).toBeDefined();
+    if (outsideProblem !== undefined) {
+      expect(outsideProblem.detail.includes('\n')).toBe(false);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
+      expect(/[\x00-\x1f\x7f]/.test(outsideProblem.detail)).toBe(false);
+    }
+  });
+
+  it('sanitizes the orphan-font-file warning detail for a font-root file with control characters in its path', () => {
+    writeValidWoff2('inter.woff2');
+    const trickyName = 'orphan\x07evil.woff2';
+    writeFileSync(
+      join(fontRoot, trickyName),
+      Buffer.concat([Buffer.from('wOF2'), Buffer.from('x')]),
+    );
+    const css = write('main.css', '@font-face { src: url(/fonts/inter.woff2); }');
+
+    const result = verifyFontAssets({
+      sourceFiles: [css],
+      fontReferences: ['/fonts/inter.woff2'],
+      resolveHref,
+      forbiddenOrigins: FORBIDDEN_ORIGINS,
+      fontRoot,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toHaveLength(1);
+    const warning = result.warnings[0];
+    expect(warning).toBeDefined();
+    if (warning !== undefined) {
+      expect(warning.detail.includes('\n')).toBe(false);
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are gone
+      expect(/[\x00-\x1f\x7f]/.test(warning.detail)).toBe(false);
+    }
   });
 
   it('reports outside-font-root for a ../ traversal reference and never reads the file it names', () => {

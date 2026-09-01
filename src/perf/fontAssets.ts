@@ -92,7 +92,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 import { assertResolverReturn, assertStringOption } from './errors.ts';
-import { scanFontFaces } from './scan.ts';
+import { sanitizeTagText, scanFontFaces } from './scan.ts';
 import { stripComments, stripHtmlComments } from './text.ts';
 
 const WOFF2_MAGIC = Buffer.from('wOF2');
@@ -178,7 +178,7 @@ function checkForbiddenOrigins(
       problems.push({
         kind: 'unreadable-source',
         source,
-        detail: `could not read "${source}": ${String(error)}`,
+        detail: `could not read "${sanitizeTagText(source)}": ${sanitizeTagText(String(error))}`,
       });
       continue;
     }
@@ -189,7 +189,9 @@ function checkForbiddenOrigins(
           kind: 'forbidden-origin',
           source,
           origin,
-          detail: `"${source}" references "${origin}" — fonts must be served from this origin`,
+          detail:
+            `"${sanitizeTagText(source)}" references "${sanitizeTagText(origin)}" — fonts must ` +
+            'be served from this origin',
         });
       }
     }
@@ -215,7 +217,9 @@ function resolveAndContain(
     problems.push({
       kind: 'resolver-threw',
       reference,
-      detail: `resolveHref threw while resolving "${reference}": ${String(error)}`,
+      detail:
+        `resolveHref threw while resolving "${sanitizeTagText(reference)}": ` +
+        sanitizeTagText(String(error)),
     });
     return undefined;
   }
@@ -224,7 +228,7 @@ function resolveAndContain(
     problems.push({
       kind: 'unresolvable-font',
       reference,
-      detail: `font reference "${reference}" did not resolve to a file`,
+      detail: `font reference "${sanitizeTagText(reference)}" did not resolve to a file`,
     });
     return undefined;
   }
@@ -233,7 +237,9 @@ function resolveAndContain(
     problems.push({
       kind: 'outside-font-root',
       reference,
-      detail: `"${reference}" resolves to "${resolved}", outside fontRoot "${fontRoot}"`,
+      detail:
+        `"${sanitizeTagText(reference)}" resolves to "${sanitizeTagText(resolved)}", outside ` +
+        `fontRoot "${sanitizeTagText(fontRoot)}"`,
     });
     return undefined;
   }
@@ -268,7 +274,7 @@ function checkChecksum(
       kind: 'missing-checksum',
       reference,
       file,
-      detail: `"${basename}" has no pinned checksum in the supplied checksums map`,
+      detail: `"${sanitizeTagText(basename)}" has no pinned checksum in the supplied checksums map`,
     });
     return;
   }
@@ -280,7 +286,9 @@ function checkChecksum(
       kind: 'unreadable-font',
       reference,
       file,
-      detail: `"${file}" could not be read for checksum verification: ${String(error)}`,
+      detail:
+        `"${sanitizeTagText(file)}" could not be read for checksum verification: ` +
+        sanitizeTagText(String(error)),
     });
     return;
   }
@@ -291,7 +299,7 @@ function checkChecksum(
       reference,
       file,
       detail:
-        `"${basename}" does not match its pinned checksum (expected ` +
+        `"${sanitizeTagText(basename)}" does not match its pinned checksum (expected ` +
         `${expected.slice(0, CHECKSUM_PREFIX_LENGTH)}…, got ${actual.slice(0, CHECKSUM_PREFIX_LENGTH)}…)`,
     });
   }
@@ -311,12 +319,17 @@ function checkFontFile(
       kind: 'unreadable-font',
       reference,
       file,
-      detail: `"${file}" is referenced but could not be read: ${String(error)}`,
+      detail: `"${sanitizeTagText(file)}" is referenced but could not be read: ${sanitizeTagText(String(error))}`,
     });
     return;
   }
   if (size === 0) {
-    problems.push({ kind: 'empty-font-file', reference, file, detail: `"${file}" is zero bytes` });
+    problems.push({
+      kind: 'empty-font-file',
+      reference,
+      file,
+      detail: `"${sanitizeTagText(file)}" is zero bytes`,
+    });
     return;
   }
 
@@ -328,7 +341,7 @@ function checkFontFile(
       kind: 'unreadable-font',
       reference,
       file,
-      detail: `"${file}" is referenced but could not be read: ${String(error)}`,
+      detail: `"${sanitizeTagText(file)}" is referenced but could not be read: ${sanitizeTagText(String(error))}`,
     });
     return;
   }
@@ -337,7 +350,7 @@ function checkFontFile(
       kind: 'not-woff2',
       reference,
       file,
-      detail: `"${file}" is not a WOFF2 file (bad magic bytes)`,
+      detail: `"${sanitizeTagText(file)}" is not a WOFF2 file (bad magic bytes)`,
     });
     return;
   }
@@ -370,7 +383,7 @@ function checkOrphans(
       warnings.push({
         kind: 'orphan-font-file',
         file: full,
-        detail: `"${full}" is not referenced by any font reference — unreferenced, wastes repo space`,
+        detail: `"${sanitizeTagText(full)}" is not referenced by any font reference — unreferenced, wastes repo space`,
       });
     }
   }

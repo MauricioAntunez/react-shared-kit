@@ -155,7 +155,12 @@ export type {
   VerifyFontPreloadResult,
 } from './fontPreload.ts';
 export { verifyFontPreload } from './fontPreload.ts';
-export type { FontUsageViolation, ObservedElement, ShippedFace } from './fontUsage.ts';
+export type {
+  FontUsageViolation,
+  NormalizedFamily,
+  ObservedElement,
+  ShippedFace,
+} from './fontUsage.ts';
 export {
   findUnshippedFontUsage,
   normalizeFamily,

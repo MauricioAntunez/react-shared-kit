@@ -29,6 +29,14 @@ function resolveHref(href: string): string | undefined {
 const PRELOAD_ONE =
   '<link rel="preload" as="font" href="/one.woff2" crossorigin type="font/woff2">';
 
+/** `<link rel="stylesheet" href="...">` tag text — the signal `attributeLinkedCssFaces` requires
+ * before a `cssFiles` entry's faces are attributed to a document (PR #8 CRITICAL finding). */
+function stylesheetLink(href: string): string {
+  return `<link rel="stylesheet" href="${href}">`;
+}
+
+const STYLESHEET_BUNDLE = stylesheetLink('/bundle.css');
+
 describe('verifyFontPreload', () => {
   it('passes clean for a multi-document build with faces in cssFiles', () => {
     write('one.woff2', 'font-bytes');
@@ -36,8 +44,8 @@ describe('verifyFontPreload', () => {
       'bundle.css',
       '@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }',
     );
-    const a = write('a.html', `<html><head>${PRELOAD_ONE}</head></html>`);
-    const b = write('b.html', `<html><head>${PRELOAD_ONE}</head></html>`);
+    const a = write('a.html', `<html><head>${STYLESHEET_BUNDLE}${PRELOAD_ONE}</head></html>`);
+    const b = write('b.html', `<html><head>${STYLESHEET_BUNDLE}${PRELOAD_ONE}</head></html>`);
 
     const result = verifyFontPreload({
       htmlFiles: [a, b],
@@ -72,8 +80,8 @@ describe('verifyFontPreload', () => {
       'bundle.css',
       '@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }',
     );
-    const clean = write('a.html', `<html><head>${PRELOAD_ONE}</head></html>`);
-    const broken = write('b.html', '<html><head></head></html>');
+    const clean = write('a.html', `<html><head>${STYLESHEET_BUNDLE}${PRELOAD_ONE}</head></html>`);
+    const broken = write('b.html', `<html><head>${STYLESHEET_BUNDLE}</head></html>`);
 
     const result = verifyFontPreload({
       htmlFiles: [clean, broken],
@@ -101,7 +109,7 @@ describe('verifyFontPreload', () => {
     );
     const html = write(
       'index.html',
-      '<html><head><link rel="preload" as="font" href="/one.woff2" crossorigin="use-credentials" type="font/woff2"></head></html>',
+      `<html><head>${STYLESHEET_BUNDLE}<link rel="preload" as="font" href="/one.woff2" crossorigin="use-credentials" type="font/woff2"></head></html>`,
     );
 
     const result = verifyFontPreload({
@@ -130,7 +138,7 @@ describe('verifyFontPreload', () => {
     );
     const html = write(
       'index.html',
-      '<html><head><link rel="preload" as="font" href="/one.woff2" crossorigin type="font/woff2"></head></html>',
+      `<html><head>${STYLESHEET_BUNDLE}<link rel="preload" as="font" href="/one.woff2" crossorigin type="font/woff2"></head></html>`,
     );
 
     const result = verifyFontPreload({
@@ -151,7 +159,7 @@ describe('verifyFontPreload', () => {
     );
     const html = write(
       'index.html',
-      '<html><head><link rel="preload" as="font" href="/one.woff2" type="font/woff2"></head></html>',
+      `<html><head>${STYLESHEET_BUNDLE}<link rel="preload" as="font" href="/one.woff2" type="font/woff2"></head></html>`,
     );
 
     const result = verifyFontPreload({
@@ -179,7 +187,7 @@ describe('verifyFontPreload', () => {
     );
     const html = write(
       'index.html',
-      '<html><head><link rel="preload" as="font" href="/one.woff2" crossorigin type="font/woff"></head></html>',
+      `<html><head>${STYLESHEET_BUNDLE}<link rel="preload" as="font" href="/one.woff2" crossorigin type="font/woff"></head></html>`,
     );
 
     const result = verifyFontPreload({
@@ -212,7 +220,7 @@ describe('verifyFontPreload', () => {
     );
     const html = write(
       'index.html',
-      '<html><head><link rel="preload" as="font" href="/root.woff2" crossorigin type="font/woff2"></head></html>',
+      `<html><head>${stylesheetLink('/root.css')}${stylesheetLink('/graph.css')}<link rel="preload" as="font" href="/root.woff2" crossorigin type="font/woff2"></head></html>`,
     );
 
     const result = verifyFontPreload({
@@ -236,7 +244,10 @@ describe('verifyFontPreload', () => {
       'bundle.css',
       '@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }',
     );
-    const html = write('index.html', `<html><head><!-- ${PRELOAD_ONE} --></head></html>`);
+    const html = write(
+      'index.html',
+      `<html><head>${STYLESHEET_BUNDLE}<!-- ${PRELOAD_ONE} --></head></html>`,
+    );
 
     const result = verifyFontPreload({
       htmlFiles: [html],
@@ -261,7 +272,7 @@ describe('verifyFontPreload', () => {
     );
     const html = write(
       'index.html',
-      `<html><head><script>var x = '${PRELOAD_ONE}';</script></head></html>`,
+      `<html><head>${STYLESHEET_BUNDLE}<script>var x = '${PRELOAD_ONE}';</script></head></html>`,
     );
 
     const result = verifyFontPreload({
@@ -287,7 +298,7 @@ describe('verifyFontPreload', () => {
     );
     const html = write(
       'index.html',
-      `<html><head><style>content: "${PRELOAD_ONE}";</style></head></html>`,
+      `<html><head>${STYLESHEET_BUNDLE}<style>content: "${PRELOAD_ONE}";</style></head></html>`,
     );
 
     const result = verifyFontPreload({
@@ -418,7 +429,10 @@ describe('verifyFontPreload', () => {
       '@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }',
     );
     const brokenFirst = '<link rel="preload" as="font" href="/one.woff2" type="font/woff2">';
-    const html = write('index.html', `<html><head>${brokenFirst}${PRELOAD_ONE}</head></html>`);
+    const html = write(
+      'index.html',
+      `<html><head>${STYLESHEET_BUNDLE}${brokenFirst}${PRELOAD_ONE}</head></html>`,
+    );
 
     const result = verifyFontPreload({
       htmlFiles: [html],
@@ -450,7 +464,10 @@ describe('verifyFontPreload', () => {
       { length: 50 },
       () => '<link rel="preload" as="font" href="/stray.woff2" crossorigin type="font/woff2">',
     ).join('');
-    const html = write('index.html', `<html><head>${PRELOAD_ONE}${strayCopies}</head></html>`);
+    const html = write(
+      'index.html',
+      `<html><head>${STYLESHEET_BUNDLE}${PRELOAD_ONE}${strayCopies}</head></html>`,
+    );
 
     const result = verifyFontPreload({
       htmlFiles: [html],
@@ -501,5 +518,280 @@ describe('verifyFontPreload', () => {
 
     expect(caught).toBeInstanceOf(TypeError);
     expect((caught as Error).message).toContain('resolveHref');
+  });
+
+  describe('FINDING 1 — per-document attribution of cssFiles faces (PR #8 CRITICAL)', () => {
+    it("reproduces the reviewer's exact fixture: b.html's lost own face is no longer invisible behind shared.css's global union", () => {
+      write('shared-a.woff2', 'font-bytes');
+      write('shared-b.woff2', 'font-bytes');
+      const shared = write(
+        'shared.css',
+        '@font-face { font-family: A; src: url(/shared-a.woff2) format("woff2"); }\n' +
+          '@font-face { font-family: B; src: url(/shared-b.woff2) format("woff2"); }',
+      );
+      const sharedPreloads =
+        '<link rel="preload" as="font" href="/shared-a.woff2" crossorigin type="font/woff2">' +
+        '<link rel="preload" as="font" href="/shared-b.woff2" crossorigin type="font/woff2">';
+      write('own.woff2', 'font-bytes');
+
+      // a.html: links shared.css AND declares its own inline face — the intact page.
+      const a = write(
+        'a.html',
+        `<html><head>${stylesheetLink('/shared.css')}${sharedPreloads}` +
+          '<style>@font-face { font-family: C; src: url(/own.woff2) format("woff2"); }</style>' +
+          '<link rel="preload" as="font" href="/own.woff2" crossorigin type="font/woff2">' +
+          '</head></html>',
+      );
+      // b.html: carries the SAME copy-pasted shared preload boilerplate, but neither links
+      // shared.css nor has any inline <style> of its own — the exact loss the reviewer
+      // reproduced, and the one a build-wide union over cssFiles could not see.
+      const b = write('b.html', `<html><head>${sharedPreloads}</head></html>`);
+
+      const result = verifyFontPreload({
+        htmlFiles: [a, b],
+        cssFiles: [shared],
+        resolveHref,
+        expectedFacesPerDocument: 2,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(
+        result.problems.some(
+          (p) =>
+            p.kind === 'under-declared-faces' && p.html === b && p.count === 0 && p.expected === 2,
+        ),
+      ).toBe(true);
+      expect(result.problems.some((p) => 'html' in p && p.html === a)).toBe(false);
+    });
+
+    it("a document that does NOT link a given cssFiles chunk does not inherit that chunk's faces", () => {
+      write('chunk.woff2', 'font-bytes');
+      const chunk = write(
+        'chunk.css',
+        '@font-face { font-family: A; src: url(/chunk.woff2) format("woff2"); }',
+      );
+      // The document carries a preload for the chunk's face but never links the stylesheet — the
+      // face must not be attributed, so the preload has nothing to pair with.
+      const html = write(
+        'index.html',
+        '<html><head><link rel="preload" as="font" href="/chunk.woff2" crossorigin type="font/woff2"></head></html>',
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [chunk],
+        resolveHref,
+        expectedFacesPerDocument: 0,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toEqual([
+        expect.objectContaining({
+          kind: 'font-preload-unpaired',
+          html,
+          href: '/chunk.woff2',
+          count: 1,
+        }),
+      ]);
+    });
+
+    it('a document that DOES link a cssFiles chunk correctly inherits its faces and passes', () => {
+      write('chunk.woff2', 'font-bytes');
+      const chunk = write(
+        'chunk.css',
+        '@font-face { font-family: A; src: url(/chunk.woff2) format("woff2"); }',
+      );
+      const html = write(
+        'index.html',
+        `<html><head>${stylesheetLink('/chunk.css')}<link rel="preload" as="font" href="/chunk.woff2" crossorigin type="font/woff2"></head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [chunk],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+
+    it('REGRESSION GUARD: cssFiles: [] with purely inline faces still passes exactly as before this fix', () => {
+      write('one.woff2', 'font-bytes');
+      const html = write(
+        'index.html',
+        `<html><head><style>@font-face { font-family: A; src: url(/one.woff2) format("woff2"); }</style>${PRELOAD_ONE}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+
+    it('an orphan cssFiles entry that no document links produces no problem of its own', () => {
+      write('a.woff2', 'font-bytes');
+      write('orphan.woff2', 'font-bytes');
+      const used = write(
+        'used.css',
+        '@font-face { font-family: A; src: url(/a.woff2) format("woff2"); }',
+      );
+      const orphan = write(
+        'orphan.css',
+        '@font-face { font-family: B; src: url(/orphan.woff2) format("woff2"); }',
+      );
+      const html = write(
+        'index.html',
+        `<html><head>${stylesheetLink('/used.css')}<link rel="preload" as="font" href="/a.woff2" crossorigin type="font/woff2"></head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [used, orphan],
+        resolveHref,
+        expectedFacesPerDocument: 1,
+      });
+
+      expect(result).toEqual({ ok: true, problems: [] });
+    });
+
+    it('a document linking a stylesheet absent from cssFiles reports unscanned-stylesheet, not a silent "no faces"', () => {
+      write('known.woff2', 'font-bytes');
+      const known = write(
+        'known.css',
+        '@font-face { font-family: A; src: url(/known.woff2) format("woff2"); }',
+      );
+      const html = write(
+        'index.html',
+        `<html><head>${stylesheetLink('/mystery.css')}</head></html>`,
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [known],
+        resolveHref,
+        expectedFacesPerDocument: 0,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.problems).toEqual([
+        expect.objectContaining({
+          kind: 'unscanned-stylesheet',
+          html,
+          href: '/mystery.css',
+        }),
+      ]);
+    });
+  });
+
+  describe('FINDING 2 — href is sanitized in every problem kind that echoes it (PR #8 HIGH)', () => {
+    function noControlChars(detail: string): boolean {
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are ABSENT
+      return !/[\x00-\x1f\x7f]/.test(detail);
+    }
+
+    it('sanitizes href in resolver-threw and unresolvable-font-file (face resolution)', () => {
+      const evilThrow = '/evil-throw\nPASS: verifyFontPreload -- forged.woff2';
+      const evilMissing = '/evil-missing\nPASS: verifyFontPreload -- forged.woff2';
+      const css = write(
+        'bundle.css',
+        `@font-face { font-family: A; src: url(${evilThrow}) format("woff2"); }\n` +
+          `@font-face { font-family: B; src: url(${evilMissing}) format("woff2"); }`,
+      );
+      const html = write('index.html', '<html><head></head></html>');
+
+      function craftedResolver(href: string): string | undefined {
+        if (href === evilThrow) throw new Error('resolver exploded');
+        if (href === evilMissing) return undefined;
+        return resolveHref(href);
+      }
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [css],
+        resolveHref: craftedResolver,
+        expectedFacesPerDocument: 0,
+      });
+
+      expect(result.ok).toBe(false);
+      const relevant = result.problems.filter(
+        (p) => p.kind === 'resolver-threw' || p.kind === 'unresolvable-font-file',
+      );
+      expect(relevant).toHaveLength(2);
+      for (const problem of relevant) {
+        expect(problem.detail.includes('\n')).toBe(false);
+        expect(noControlChars(problem.detail)).toBe(true);
+      }
+    });
+
+    it('sanitizes href in font-preload-missing/unpaired/duplicate/wrong-crossorigin/wrong-type', () => {
+      const evilMissing = '/evil-missing\nPASS: forged.woff2';
+      const evilDup = '/evil-dup\nPASS: forged.woff2';
+      const evilType = '/evil-type\nPASS: forged.woff2';
+      const evilStray = '/evil-stray\nPASS: forged.woff2';
+
+      const html = write(
+        'index.html',
+        '<html><head>' +
+          `<style>@font-face { font-family: A; src: url(${evilMissing}) format("woff2"); }` +
+          `@font-face { font-family: B; src: url(${evilDup}) format("woff2"); }` +
+          `@font-face { font-family: C; src: url(${evilType}) format("woff2"); }</style>` +
+          `<link rel="preload" as="font" href="${evilDup}" type="font/woff2">` +
+          `<link rel="preload" as="font" href="${evilDup}" type="font/woff2">` +
+          `<link rel="preload" as="font" href="${evilType}" crossorigin type="font/woff">` +
+          `<link rel="preload" as="font" href="${evilStray}" crossorigin type="font/woff2">` +
+          '</head></html>',
+      );
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [],
+        resolveHref,
+        expectedFacesPerDocument: 0,
+      });
+
+      expect(result.ok).toBe(false);
+      const targetKinds = [
+        'font-preload-missing',
+        'font-preload-unpaired',
+        'font-preload-duplicate',
+        'font-preload-wrong-crossorigin',
+        'font-preload-wrong-type',
+      ];
+      const relevant = result.problems.filter((p) => targetKinds.includes(p.kind));
+      expect(targetKinds.every((kind) => relevant.some((p) => p.kind === kind))).toBe(true);
+      expect(relevant.length).toBeGreaterThan(0);
+      for (const problem of relevant) {
+        expect(problem.detail.includes('\n')).toBe(false);
+        expect(noControlChars(problem.detail)).toBe(true);
+      }
+    });
+
+    it('sanitizes href in unscanned-stylesheet', () => {
+      write('known.woff2', 'font-bytes');
+      const known = write(
+        'known.css',
+        '@font-face { font-family: A; src: url(/known.woff2) format("woff2"); }',
+      );
+      const evilHref = '/evil\nPASS: verifyFontPreload -- forged.css';
+      const html = write('index.html', `<html><head>${stylesheetLink(evilHref)}</head></html>`);
+
+      const result = verifyFontPreload({
+        htmlFiles: [html],
+        cssFiles: [known],
+        resolveHref,
+        expectedFacesPerDocument: 0,
+      });
+
+      expect(result.ok).toBe(false);
+      const problem = result.problems.find((p) => p.kind === 'unscanned-stylesheet');
+      expect(problem).toBeDefined();
+      expect(problem?.detail.includes('\n')).toBe(false);
+      expect(noControlChars(problem?.detail ?? '')).toBe(true);
+    });
   });
 });
