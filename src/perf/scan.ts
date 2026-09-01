@@ -221,24 +221,36 @@ export function attr(tag: string, name: string): string | undefined {
  * pathological one. */
 export const MAX_MALFORMED_TAG_LENGTH = 300;
 
-/** Collapses ASCII control characters (including newlines/carriage returns) in `tag` to a visible
- * escape sequence, then caps the result to `MAX_MALFORMED_TAG_LENGTH` (round-2 review MEDIUM #7).
+/** Collapses ASCII control characters (including newlines/carriage returns), C1 control
+ * characters, and the two Unicode line-terminator separators in `tag` to a visible escape
+ * sequence, then caps the result to `MAX_MALFORMED_TAG_LENGTH` (round-2 review MEDIUM #7; class
+ * widened round-4 review MEDIUM — see below).
  *
  * WHY: `tag` is placed verbatim into a problem's `message` (e.g. `"<html> has a <link
  * rel="stylesheet"> with no usable href (${tag}) — ..."`), and this package's own README suggests
  * a consumer prints one problem per line. An embedded `\n` in a malformed tag would let a single
  * build-content string forge extra "lines" into that output — a log-forging surface, reproduced
- * with a tag containing an embedded newline landing byte-for-byte in a printed message. Escaping
- * every control character (not just `\n`) closes the whole class, not just the one reproduced
- * instance. Length is capped SEPARATELY, after escaping, so a very long but otherwise ordinary tag
+ * with a tag containing an embedded newline landing byte-for-byte in a printed message.
+ *
+ * COVERAGE (round-4 review MEDIUM: the prior doc comment claimed "every control character", which
+ * was false — `\x00-\x1f`/`\x7f` left NEL (U+0085), CSI (U+009B), and both Unicode line
+ * separators unescaped): the escaped class is exactly C0 controls (`\x00-\x1f`), DEL (`\x7f`), C1
+ * controls (`\x80-\x9f`, which includes NEL and CSI), and `U+2028`/`U+2029`. The latter two are
+ * Unicode LINE SEPARATOR and PARAGRAPH SEPARATOR — legitimate line terminators to a consumer that
+ * splits on Unicode line boundaries rather than ASCII `\n`, so leaving them unescaped would reopen
+ * the same one-problem-per-line forging surface `\n` was fixed for, just via a wider definition of
+ * "line". Length is capped SEPARATELY, after escaping, so a very long but otherwise ordinary tag
  * still gets a bounded message rather than embedding megabytes of raw HTML in a problem object. */
 export function sanitizeTagText(tag: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control characters (including newline) to escape them — that IS the sanitization this function exists to perform.
-  const escaped = tag.replace(/[\x00-\x1f\x7f]/g, (ch) => {
+  const escaped = tag.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, (ch) => {
     if (ch === '\n') return '\\n';
     if (ch === '\r') return '\\r';
     if (ch === '\t') return '\\t';
-    return `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`;
+    const code = ch.charCodeAt(0);
+    return code <= 0xff
+      ? `\\x${code.toString(16).padStart(2, '0')}`
+      : `\\u${code.toString(16).padStart(4, '0')}`;
   });
   if (escaped.length <= MAX_MALFORMED_TAG_LENGTH) return escaped;
   return `${escaped.slice(0, MAX_MALFORMED_TAG_LENGTH)}… [truncated, ${escaped.length} chars]`;

@@ -103,6 +103,51 @@ describe('sanitizeTagText', () => {
     expect(result.length).toBeLessThan(400);
     expect(result).toContain('truncated');
   });
+
+  // Round-4 review MEDIUM: the doc comment claimed "every control character" while the class was
+  // actually [\x00-\x1f\x7f] — NEL, CSI, and the Unicode line separators passed through unescaped.
+  // These four pin the widened class; each is REGRESSION-red against the pre-fix class (see PR
+  // report for the revert-and-confirm proof).
+  it('escapes NEL (U+0085), keeping the surrounding text intact', () => {
+    expect(sanitizeTagText(`a\u0085b`)).toBe('a\\x85b');
+  });
+
+  it('escapes CSI (U+009B)', () => {
+    expect(sanitizeTagText(`a\u009bb`)).toBe('a\\x9bb');
+  });
+
+  it('escapes U+2028 LINE SEPARATOR', () => {
+    expect(sanitizeTagText(`a\u2028b`)).toBe('a\\u2028b');
+  });
+
+  it('escapes U+2029 PARAGRAPH SEPARATOR', () => {
+    expect(sanitizeTagText(`a\u2029b`)).toBe('a\\u2029b');
+  });
+
+  it('regression: previously-covered cases are unaffected by the widened class', () => {
+    expect(sanitizeTagText('\n')).toBe('\\n');
+    expect(sanitizeTagText('\r')).toBe('\\r');
+    expect(sanitizeTagText('\t')).toBe('\\t');
+    expect(sanitizeTagText('\x00')).toBe('\\x00');
+    expect(sanitizeTagText('\x7f')).toBe('\\x7f');
+    expect(sanitizeTagText('\x1b[31m')).toBe('\\x1b[31m');
+  });
+
+  it('still identifies its input: a normal substring survives alongside a new escaped code point', () => {
+    const result = sanitizeTagText(`<link href="/font.woff2\u2028">`);
+
+    expect(result).toContain('<link href="/font.woff2');
+    expect(result).toContain('\\u2028');
+  });
+
+  it('still caps length with the widened class in play', () => {
+    const long = `${'x'.repeat(1000)}\u2028`;
+
+    const result = sanitizeTagText(long);
+
+    expect(result.length).toBeLessThan(400);
+    expect(result).toContain('truncated');
+  });
 });
 
 describe('MAX_URL_LENGTH bounding — the vacuity trap and the fix', () => {
