@@ -266,6 +266,38 @@ describe('stripHtmlComments — <script>/<style> raw-text blanking (merge)', () 
     expect(text).not.toContain('/never.woff2');
     expect(text).toContain('<script>');
   });
+
+  it('does not let a > inside a quoted opening-tag attribute end the tag early and expose the real body (regression: openingTagEnd quote-awareness)', () => {
+    // The quoted `data-x` value itself contains both a `>` and a literal `</script>` string. A
+    // quote-UNAWARE openingTagEnd stops at the embedded `>` (inside the still-open quote), so
+    // rawTextSpan then starts its close-tag search from mid-attribute and finds that literal
+    // `</script>` text as if it were the real closing tag — ending the raw-text span there instead
+    // of at the actual `</script>` below. Everything after that point, including the real body's
+    // `<link>`-shaped decoy, then falls through to the ordinary (non-raw-text) scan and survives.
+    // Reproduced against a hand-mutated copy of openingTagEnd with the quote branch removed: this
+    // exact input leaks `/leak-test.woff2` and drops `AFTER` from the tail. See text.ts's
+    // `openingTagEnd` doc comment for the `<script data-x="a>b">` example this pins.
+    const html =
+      '<script data-x="fake>oops</script>">' +
+      'var real = "<link rel=preload as=font href=/leak-test.woff2>";' +
+      '</script>AFTER';
+    const { text } = stripHtmlComments(html);
+    expect(text).not.toContain('/leak-test.woff2');
+    expect(text).toContain('AFTER');
+  });
+
+  it('does not let a non-matching close tag whose name only starts with "script" end the raw-text span early (regression: rawTextSpan exact-match)', () => {
+    // `</scriptx>` is not a close tag for `<script>` at all — a browser's tokenizer only matches
+    // the exact tag name. A rawTextSpan that used `.startsWith(tagName)` instead of `===` would
+    // treat `</scriptx>` as if it closed the script here, ending the raw-text span early and
+    // letting everything between it and the real `</script>` — including the `<link>`-shaped
+    // decoy — fall through to the ordinary scan unblanked.
+    const html =
+      '<script>var x = 1; </scriptx> var real = "<link rel=preload as=font href=/mirror-leak.woff2>"; </script>AFTER';
+    const { text } = stripHtmlComments(html);
+    expect(text).not.toContain('/mirror-leak.woff2');
+    expect(text).toContain('AFTER');
+  });
 });
 
 describe('stripHtmlComments — quote-aware in-tag scanning (merge)', () => {
