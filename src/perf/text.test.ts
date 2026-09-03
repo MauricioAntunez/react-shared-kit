@@ -267,22 +267,40 @@ describe('stripHtmlComments — <script>/<style> raw-text blanking (merge)', () 
     expect(text).toContain('<script>');
   });
 
-  it('does not let a > inside a quoted opening-tag attribute end the tag early and expose the real body (regression: openingTagEnd quote-awareness)', () => {
+  it('does not let a > inside a double-quoted opening-tag attribute end the tag early and expose the real body (regression: openingTagEnd quote-awareness)', () => {
     // The quoted `data-x` value itself contains both a `>` and a literal `</script>` string. A
     // quote-UNAWARE openingTagEnd stops at the embedded `>` (inside the still-open quote), so
     // rawTextSpan then starts its close-tag search from mid-attribute and finds that literal
     // `</script>` text as if it were the real closing tag — ending the raw-text span there instead
     // of at the actual `</script>` below. Everything after that point, including the real body's
     // `<link>`-shaped decoy, then falls through to the ordinary (non-raw-text) scan and survives.
-    // Reproduced against a hand-mutated copy of openingTagEnd with the quote branch removed: this
-    // exact input leaks `/leak-test.woff2` and drops `AFTER` from the tail. See text.ts's
-    // `openingTagEnd` doc comment for the `<script data-x="a>b">` example this pins.
+    // Reproduced against a hand-mutated copy of openingTagEnd with the quote branch removed
+    // entirely (`if (char === '"') {`, dropping single-quote awareness too): this exact input
+    // leaks `/leak-test.woff2`. `toContain('AFTER')` is a sanity check that the scan did not also
+    // consume past the real close tag — it is not evidence of this regression by itself, since the
+    // mutated run still contains `AFTER`; only the `not.toContain` assertion below discriminates
+    // the bug. See text.ts's `openingTagEnd` doc comment for the `<script data-x="a>b">` example
+    // this pins. This case covers only the double-quote branch; the sibling test below covers the
+    // single-quote branch, since `openingTagEnd` is generic over both quote characters.
     const html =
       '<script data-x="fake>oops</script>">' +
       'var real = "<link rel=preload as=font href=/leak-test.woff2>";' +
       '</script>AFTER';
     const { text } = stripHtmlComments(html);
     expect(text).not.toContain('/leak-test.woff2');
+    expect(text).toContain('AFTER');
+  });
+
+  it('does not let a > inside a single-quoted opening-tag attribute end the tag early and expose the real body (regression: openingTagEnd quote-awareness, single-quote branch)', () => {
+    // Same defect as the double-quoted case above, mirrored onto the single-quote branch of
+    // `openingTagEnd` (`char === "'"`), which is otherwise untested — a mutant that drops only
+    // that branch (keeping double-quote awareness) leaves the test above green.
+    const html =
+      "<script data-x='fake>oops</script>'>" +
+      'var real = "<link rel=preload as=font href=/leak-test-sq.woff2>";' +
+      '</script>AFTER';
+    const { text } = stripHtmlComments(html);
+    expect(text).not.toContain('/leak-test-sq.woff2');
     expect(text).toContain('AFTER');
   });
 
@@ -298,6 +316,15 @@ describe('stripHtmlComments — <script>/<style> raw-text blanking (merge)', () 
     expect(text).not.toContain('/mirror-leak.woff2');
     expect(text).toContain('AFTER');
   });
+
+  // KNOWN OPEN, deferred, not pinned here: the three tests above each close one specific
+  // parser-confusion shape (quote-unaware openingTagEnd, and a startsWith-style close-tag match)
+  // — they do not close the class. A real bypass remains in unmodified rawTextSpan via HTML's
+  // script-data-double-escaped state: `<script><!--<script></script>--><link ... ></script>AFTER`
+  // makes that first `</script>` NOT close the element in a real browser (the `<!--<script`
+  // sequence puts the tokenizer in double-escaped mode), but rawTextSpan ends the raw-text span at
+  // that `</script>` anyway, so the `<link>` decoy after it leaks. No test pins this — it would
+  // fail against current text.ts — tracked as a follow-up, not fixed here.
 });
 
 describe('stripHtmlComments — quote-aware in-tag scanning (merge)', () => {
