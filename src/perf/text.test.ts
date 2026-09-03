@@ -274,9 +274,12 @@ describe('stripHtmlComments — <script>/<style> raw-text blanking (merge)', () 
     // `</script>` text as if it were the real closing tag — ending the raw-text span there instead
     // of at the actual `</script>` below. Everything after that point, including the real body's
     // `<link>`-shaped decoy, then falls through to the ordinary (non-raw-text) scan and survives.
-    // Reproduced against a hand-mutated copy of openingTagEnd with the quote branch removed
-    // entirely (`if (char === '"') {`, dropping single-quote awareness too): this exact input
-    // leaks `/leak-test.woff2`. `toContain('AFTER')` is a sanity check that the scan did not also
+    // Reproduced against a hand-mutated copy of openingTagEnd with the entire quote branch
+    // deleted (`if (char === '"' || char === "'") { i = stringEnd(...); continue; }` removed): this
+    // exact input leaks `/leak-test.woff2`. (A narrower mutation that keeps double-quote awareness
+    // and drops only the single-quote half — `if (char === '"') {` — does NOT reproduce this leak;
+    // it is what the sibling single-quote test below pins instead.) `toContain('AFTER')` is a sanity
+    // check that the scan did not also
     // consume past the real close tag — it is not evidence of this regression by itself, since the
     // mutated run still contains `AFTER`; only the `not.toContain` assertion below discriminates
     // the bug. See text.ts's `openingTagEnd` doc comment for the `<script data-x="a>b">` example
