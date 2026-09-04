@@ -185,27 +185,123 @@ function openingTagEnd(source: string, ltIndex: number): number {
  * rather than copying it verbatim (see `blankRawText`): copying it through would let a
  * `<link ...>`-shaped JS or CSS string literal register as a real tag to a later regex-based
  * scanner reading the stripped output — the same class of false match this file exists to close.
- * Only a matching close tag, matched case-insensitively, ends the search — no comment scanning and
- * no quote scanning inside, it only hunts for `</name`. No close tag found means the element runs
- * to EOF, the same way a browser's tokenizer treats an unclosed `<script>` as consuming the rest
- * of the document. */
+ * A close tag is matched case-insensitively. No close tag found means the element runs to EOF, the
+ * same way a browser's tokenizer treats an unclosed `<script>` as consuming the rest of the
+ * document.
+ *
+ * NOT "the first `</script>` wins" — that was this function's behaviour until 2026-09-03 and it
+ * was a live bypass. `<!--` inside script data enters the WHATWG SCRIPT-DATA-ESCAPED state, and a
+ * `<script` inside THAT enters SCRIPT-DATA-DOUBLE-ESCAPED, in which `</script>` does NOT close the
+ * element — a second one is required. `level` below tracks exactly those three states (0 script
+ * data, 1 escaped, 2 double escaped); `-->` returns to 0 from either escaped state. Reading
+ * `<script><!--<script></script>--><link rel=preload as=font href=/x.woff2></script>` the old way
+ * ended the body at the FIRST `</script>`, emitting a `<link rel=preload>` that is script CONTENT
+ * to a browser as a live tag into the stripped output. That is the false-EXEMPTION direction: a
+ * later regex scanner counts it as a real preload, so a font gate can report a document compliant
+ * on the strength of a preload that does not exist in the DOM.
+ *
+ * KNOWN, DELIBERATE DIVERGENCES from a full spec tokenizer — both PRE-DATE the 2026-09-03 fix and
+ * both are pinned as enumerated divergences in `text.differential.test.ts`, not accidents:
+ *   1. the `>` ending a close tag is found with `indexOf`, so `</script foo="a>b">` ends early;
+ *   2. a close tag is not required to be followed by whitespace/`/`/`>`, so `</script"` matches.
+ * Both are the same false-exemption direction as the bug above. Widening this function to the full
+ * ~18-state ladder was considered and deferred: the differential harness is what bounds the risk
+ * either way, and a fix pass over these gates has a measured history of introducing more defects
+ * than it closes. Do not close either one without re-running that harness. */
+/** The characters that may FOLLOW a tag name and still leave it a real tag name: whitespace, `/`,
+ * `>`. WHATWG uses this same delimiter set on both sides of the distinction — it is what makes an
+ * end tag "appropriate", and what terminates the name run in double-escape-start. The only call
+ * site here is the latter (`isScriptOpenAt`, matching an OPENING `<script`); the close branch in
+ * `stepAtLessThan` deliberately does NOT consult it, which is enumerated divergence #2. Named
+ * after the spec concept rather than extracted to satisfy a lint budget. */
+function isTagNameDelimiter(char: string): boolean {
+  return (
+    char === ' ' ||
+    char === '\t' ||
+    char === '\n' ||
+    char === '\f' ||
+    char === '\r' ||
+    char === '/' ||
+    char === '>'
+  );
+}
+
+function isScriptOpenAt(source: string, lt: number): boolean {
+  return tagNameAt(source, lt + 1) === 'script' && isTagNameDelimiter(source.charAt(lt + 7));
+}
+
+/** How deeply a `<script>` body is nested in the WHATWG script-data escape ladder. The full spec
+ * has ~18 states; only these three are observable in `{ bodyEnd, tagEnd }`, because the dash and
+ * dash-dash sub-states are recoverable by `isEscapeEndAt`'s literal `-->` scan. `</script>` closes
+ * from `data` and `escaped`, and NEVER from `doubleEscaped`. */
+type ScriptDataLevel = 'data' | 'escaped' | 'doubleEscaped';
+
+/** Either the raw-text element ends here, or scanning continues at `next` with `level`. A union,
+ * not a record with a `close` flag: on the closing arm there is no meaningful `level` or `next`,
+ * and the type is what stops a later edit from reading one. */
+type RawTextStep = { close: true } | { close: false; level: ScriptDataLevel; next: number };
+
+function stepAtLessThan(
+  source: string,
+  lt: number,
+  tagName: 'script' | 'style',
+  level: ScriptDataLevel,
+): RawTextStep {
+  if (source.charAt(lt + 1) === '/' && tagNameAt(source, lt + 2) === tagName) {
+    return level === 'doubleEscaped'
+      ? { close: false, level: 'escaped', next: lt + 2 }
+      : { close: true };
+  }
+  if (tagName === 'script' && level === 'escaped' && isScriptOpenAt(source, lt)) {
+    return { close: false, level: 'doubleEscaped', next: lt + 7 };
+  }
+  if (tagName === 'script' && level === 'data' && source.startsWith('<!--', lt)) {
+    // Resume at the FIRST dash, not past all four characters: the spec's escape-start-dash /
+    // escaped-dash-dash states mean the very next `>` still returns to script data, so the abrupt
+    // forms `<!-->` and `<!--->` must reset the ladder. Skipping to `lt + 4` hid those dashes from
+    // `isEscapeEndAt` and left the level stuck at escaped, where a later `<script` promoted to
+    // double-escaped and swallowed the rest of the document.
+    return { close: false, level: 'escaped', next: lt + 2 };
+  }
+  return { close: false, level, next: lt + 1 };
+}
+
+/** `-->` ends BOTH escaped states, returning all the way to `data` — not to `escaped`. Landing in
+ * `escaped` instead would let a following `<script` re-promote to `doubleEscaped`, after which
+ * `</script>` stops closing and the rest of the document is blanked (pinned by a named case in
+ * `text.differential.test.ts`; the seeded generator does not reach that shape on its own). */
+function isEscapeEndAt(source: string, j: number, level: ScriptDataLevel): boolean {
+  return level !== 'data' && source.charAt(j) === '-' && source.startsWith('-->', j);
+}
+
 function rawTextSpan(
   source: string,
   i: number,
   tagName: 'script' | 'style',
 ): { bodyEnd: number; tagEnd: number } {
+  const eof = { bodyEnd: source.length, tagEnd: source.length };
+  let level: ScriptDataLevel = 'data';
   let j = i;
-  for (;;) {
-    const lt = source.indexOf('<', j);
-    if (lt === -1) return { bodyEnd: source.length, tagEnd: source.length };
-    if (source.charAt(lt + 1) === '/' && tagNameAt(source, lt + 2) === tagName) {
-      const gt = source.indexOf('>', lt);
-      return gt === -1
-        ? { bodyEnd: source.length, tagEnd: source.length }
-        : { bodyEnd: lt, tagEnd: gt + 1 };
+  while (j < source.length) {
+    const char = source.charAt(j);
+    if (char === '<') {
+      const step = stepAtLessThan(source, j, tagName, level);
+      if (step.close) {
+        const gt = source.indexOf('>', j);
+        return gt === -1 ? eof : { bodyEnd: j, tagEnd: gt + 1 };
+      }
+      level = step.level;
+      j = step.next;
+      continue;
     }
-    j = lt + 1;
+    if (isEscapeEndAt(source, j, level)) {
+      level = 'data';
+      j += 3;
+      continue;
+    }
+    j++;
   }
+  return eof;
 }
 
 /** Pre-pass run BEFORE comment stripping: blanks the BODY of every raw-text element this call
